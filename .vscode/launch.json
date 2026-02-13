@@ -1,0 +1,17 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug Artmentorai Project",
+            "type": "debugpy",
+            "request": "launch",
+            
+            "module": "ULE..artmentorai_project.__main__",
+            
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+    ]
+}

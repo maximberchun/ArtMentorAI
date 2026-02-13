@@ -1,0 +1,101 @@
+repos:
+- repo: https://github.com/astral-sh/uv-pre-commit
+  rev: 0.8.13
+  hooks:
+  - id: uv-lock
+    args: [ "--frozen", "--quiet" ]
+    name: Check if lock file is up to date
+    stages: [ manual ]
+
+- repo: https://github.com/ComPWA/taplo-pre-commit
+  rev: v0.9.3
+  hooks:
+  - id: taplo-format
+    name: Format TOML files with Taplo
+    stages: [ pre-commit ]
+  - id: taplo-lint
+    name: Lint TOML files with Taplo
+    stages: [ pre-commit ]
+
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v6.0.0
+  hooks:
+  - id: trailing-whitespace
+    name: Remove trailing whitespace
+    args:
+    - --markdown-linebreak-ext=md
+    stages: [ pre-commit ]
+  - id: check-yaml
+    name: Check YAML syntax
+    args:
+    - --unsafe
+    stages: [ pre-commit, manual ]
+  - id: check-xml
+    name: Check XML syntax
+    stages: [ pre-commit, manual ]
+  - id: check-ast
+    name: Check Python AST
+    stages: [ pre-commit, manual ]
+  - id: detect-private-key
+    name: Detect private keys
+    stages: [ pre-commit, manual ]
+  - id: end-of-file-fixer
+    name: Fix end-of-file
+    stages: [ pre-commit, manual ]
+  - id: check-merge-conflict
+    name: Detect merge conflicts
+    stages: [ pre-commit, manual ]
+  - id: check-added-large-files
+    name: Detect large files
+    stages: [ pre-commit, manual ]
+  - id: check-case-conflict
+    name: Detect case conflicts
+    stages: [ pre-commit, manual ]
+  - id: no-commit-to-branch
+    name: Prevent commits to protected branches
+    args:
+    - -p release/.*
+    - --branch=master
+    stages: [ pre-commit, manual ]
+
+- repo: https://github.com/codespell-project/codespell
+  rev: v2.4.1
+  hooks:
+  - id: codespell
+    name: Check for common spelling mistakes
+    additional_dependencies:
+    - tomli
+    stages: [ pre-commit, manual ]
+
+- repo: https://github.com/pre-commit/mirrors-mypy
+  rev: v1.17.1
+  hooks:
+  - id: mypy
+    name: Type check Python with mypy
+    args:
+    - --config-file=pyproject.toml
+    exclude: '(tests|ai_safety)'
+    additional_dependencies:
+    - types-PyYAML
+    - types-requests
+    - sqlmodel==0.0.22
+    - pydantic[mypy]
+    stages: [ pre-commit, manual ]
+
+- repo: https://github.com/charliermarsh/ruff-pre-commit
+  rev: 'v0.12.10'
+  hooks:
+  - id: ruff-format
+    name: Format Python with ruff
+    additional_dependencies:
+    - ruff[all]
+    stages: [ pre-commit ]
+  - id: ruff-check
+    name: Lint Python with ruff
+    args:
+    - --fix
+    additional_dependencies:
+    - ruff[all]
+    stages: [ pre-commit, manual ]
+
+exclude: ^(?!.*\.(py|ya?ml|toml)($|\?)).*

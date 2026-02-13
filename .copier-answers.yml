@@ -1,0 +1,13 @@
+# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
+_commit: v1.0.0
+_src_path: https://github.com/Xeridia-Team/python-template
+cli_tool_name: artmentorai-project
+code_type: API
+module_name: ''
+package_name: ULE_artmentorai_project
+project_description: A Python project
+project_group: ULE
+project_name: artmentorai-project
+python_version: '3.11'
+user_email: mberch00@estudiantes.unileon.es
+user_name: Maxim Berchun

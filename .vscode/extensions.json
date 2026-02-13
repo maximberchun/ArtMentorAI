@@ -1,0 +1,10 @@
+{
+  "recommendations": [
+    "charliermarsh.ruff",
+    "ms-python.mypy-type-checker",
+    "ms-python.python",
+    "wholroyd.jinja",
+    "ryanluker.vscode-coverage-gutters",
+    "meta.pyrefly"
+  ]
+}
