@@ -10,3 +10,9 @@ Files placed here should focus only on representing the data sent back
 to the client. They should remain independent from request validation
 (`models.requests`) and business logic (`services`).
 """
+
+from .analysis_response import AnalysisResponse
+
+__all__ = [
+    'AnalysisResponse',
+]

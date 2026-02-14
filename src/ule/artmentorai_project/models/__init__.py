@@ -11,3 +11,7 @@ the application and with external clients. Models must remain focused
 on data representation, separate from business logic (`services`) and
 infrastructure concerns (`core`).
 """
+
+__all__ = [
+    'AnalysisResponse',
+]

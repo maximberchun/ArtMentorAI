@@ -10,3 +10,9 @@ Files placed here should focus on implementing the core behavior of the
 application, independent from technical details such as HTTP requests,
 database drivers, or framework-specific code.
 """
+
+from .agent_service import AgentService
+
+__all__ = [
+    'AgentService',
+]

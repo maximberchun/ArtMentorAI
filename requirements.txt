@@ -1,0 +1,23 @@
+# Core FastAPI stack
+fastapi>=0.115.0
+uvicorn[standard]
+python-multipart
+
+# Configuration and environment
+pydantic>=2.10.0
+pydantic-settings
+python-dotenv
+
+# AI/ML
+pydantic-ai==0.5.0
+google-generativeai
+
+# Utilities
+httpx
+
+# Development (optional)
+pytest
+pytest-asyncio
+black
+ruff
+mypy

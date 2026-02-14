@@ -10,3 +10,5 @@ Files placed here should focus only on representing the expected
 client input. They should not contain business logic (`services`) or
 response definitions (`models.responses`).
 """
+
+__all__ = []

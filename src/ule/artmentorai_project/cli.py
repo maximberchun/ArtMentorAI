@@ -25,9 +25,10 @@ def create_app(config: AppConfig) -> FastAPI:
 
     """
     app = FastAPI(
-        title='',
-        description='',
-        debug=False,
+        title=config.app_name,
+        description=f'{config.app_name} API - Version {config.app_version}',
+        version=config.app_version,
+        debug=config.debug,
     )
 
     """Include endpoints"""
@@ -74,6 +75,10 @@ def _parse_args() -> argparse.Namespace:
         '--dev',
         action='store_true',
         help='Run in development mode (load vars from .env file)',
+    )
+
+    parser.add_argument(
+        '--verbose', '-v', action='store_true', help='Enable verbose logging output'
     )
 
     return parser.parse_args()

@@ -11,3 +11,9 @@ Files placed here should handle request/response flow and delegate the
 actual business rules to the `services` layer, keeping controllers thin
 and focused on API communication.
 """
+
+from .analysis import create_analysis_router
+
+__all__ = [
+    'create_analysis_router',
+]
