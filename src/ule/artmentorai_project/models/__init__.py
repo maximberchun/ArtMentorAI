@@ -12,6 +12,9 @@ on data representation, separate from business logic (`services`) and
 infrastructure concerns (`core`).
 """
 
+from .responses import AnalysisResponse
+from .responses.analysis_response import AnalysisResponse
+
 __all__ = [
     'AnalysisResponse',
 ]

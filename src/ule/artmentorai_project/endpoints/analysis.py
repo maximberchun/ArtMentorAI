@@ -1,12 +1,20 @@
-"""Endpoints for artwork analysis."""
+"""Endpoints for artwork analysis with long-term memory (RAG).
+
+This module provides REST endpoints for:
+- Artwork critique generation using Gemini AI
+- Automatic storage in vector database for future reference
+- Error handling that doesn't break the API if vector DB is down
+"""
 
 from pathlib import Path
 from typing import Annotated
 
-from config import AppConfig
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
-from models import AnalysisResponse
-from services import AgentService
+
+from ..config import AppConfig
+from ..models import AnalysisResponse
+from ..services import AgentService
+from ..services.vector_service import ArtCritique, VectorService
 
 
 def get_agent_service(config: AppConfig) -> AgentService:
@@ -14,8 +22,28 @@ def get_agent_service(config: AppConfig) -> AgentService:
     return AgentService(config)
 
 
+def get_vector_service(config: AppConfig) -> VectorService:
+    """Dependency injection for VectorService.
+
+    Creates or reuses VectorService instance with proper logger.
+
+    Args:
+        config: Application configuration
+
+    Returns:
+        VectorService: Initialized vector service instance
+    """
+    return VectorService(
+        host='localhost',
+        port=6333,
+        logger=config.logger,
+    )
+
+
 def _validate_image_file(
-    filename: str, content_type: str | None, config: AppConfig
+    filename: str,
+    content_type: str | None,
+    config: AppConfig,
 ) -> tuple[str, str]:
     """
     Validate that file is a valid image.
@@ -37,38 +65,46 @@ def _validate_image_file(
     if file_extension not in config.upload.allowed_extensions:
         allowed = ', '.join(config.upload.allowed_extensions)
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=f'Extension not allowed. Use: {allowed}'
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f'Extension not allowed. Use: {allowed}',
         )
 
     if actual_mime not in config.upload.allowed_mime_types:
         allowed = ', '.join(config.upload.allowed_mime_types)
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=f'MIME type not allowed. Use: {allowed}'
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f'MIME type not allowed. Use: {allowed}',
         )
 
     return file_extension, actual_mime
 
 
-def _validate_file_size(content_length: int, config: AppConfig) -> None:
+def _validate_file_size(
+    content: bytes,
+    max_file_size_mb: int,
+) -> None:
     """
     Validate that file size is within limits.
 
     Args:
-        content_length: Size of the file in bytes
-        config: Application configuration
+        content: File content bytes
+        max_file_size_mb: Maximum allowed file size in MB
 
     Raises:
         HTTPException: If file is too large or empty
     """
-    max_size = config.upload.max_file_size_mb * 1024 * 1024
-    if content_length > max_size:
+    max_size = max_file_size_mb * 1024 * 1024
+    if len(content) > max_size:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f'File too large (max {config.upload.max_file_size_mb}MB)',
+            detail=f'File too large (max {max_file_size_mb}MB)',
         )
 
-    if content_length == 0:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='File is empty')
+    if len(content) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='File is empty',
+        )
 
 
 def create_analysis_router(config: AppConfig) -> APIRouter:
@@ -91,43 +127,87 @@ def create_analysis_router(config: AppConfig) -> APIRouter:
         },
     )
 
+    # Initialize services
+    agent_service = AgentService(config)
+    vector_service = get_vector_service(config)
+
     @router.post(
         '/critique',
         summary='Analyze an artwork',
         description='Send an image for structured feedback with score and recommendations',
     )
-    async def critique_artwork(file: Annotated[UploadFile, File()]) -> AnalysisResponse:
+    async def critique_artwork(
+        file: Annotated[UploadFile, File()],
+    ) -> AnalysisResponse:
         """
-        Main endpoint for artwork analysis.
+        Main endpoint for artwork analysis with automatic memory storage.
+
+        Processes artwork image through Gemini AI and stores the critique
+        in vector database for long-term memory (RAG).
+
+        Database failures are gracefully handled - the API returns the
+        analysis even if vector DB is temporarily unavailable.
 
         Args:
             file: Image file to analyze
 
         Returns:
-            AnalysisResponse: JSON with summary, score, technical_errors and advice
+            AnalysisResponse: JSON with summary, score, technical_errors, and advice
 
         Raises:
             HTTPException: If validation or processing fails
         """
-        agent_service = AgentService(config)
-
         try:
             # Validate file
             _extension, mime_type = _validate_image_file(
-                filename=file.filename or 'unknown', content_type=file.content_type, config=config
+                filename=file.filename or 'unknown',
+                content_type=file.content_type,
+                config=config,
             )
 
             # Read content
             content = await file.read()
 
-            # Validate size
-            _validate_file_size(len(content), config)
+            # Validate size and check if not empty
+            _validate_file_size(content, config.upload.max_file_size_mb)
 
             config.logger.info('Analyzing image: %s', file.filename)
 
-            # Analyze with agent
-            return await agent_service.analyze_image(image_bytes=content, mime_type=mime_type)
+            # Analyze with Gemini AI agent
+            result = await agent_service.analyze_image(
+                image_bytes=content,
+                mime_type=mime_type,
+            )
 
+            # ============== RAG: Store critique in vector database ==============
+            # This is wrapped in try/except so the API doesn't fail if DB is down
+            try:
+                config.logger.debug('Attempting to store critique in vector database')
+
+                # Convert analysis result to ArtCritique for vector storage
+                if isinstance(result, dict):
+                    result = AnalysisResponse(**result)
+
+                critique = ArtCritique.from_analysis_response(result)
+                # Save to Qdrant with filename as identifier
+                filename = file.filename or 'unknown'
+                vector_service.save_critique(critique, filename)
+
+                config.logger.info(
+                    'Critique stored in vector database: %s',
+                    filename,
+                )
+
+            except (ConnectionError, TimeoutError, OSError) as vector_error:
+                # Log the error but don't fail the API
+                config.logger.warning(
+                    'Failed to store critique in vector database: %s. '
+                    'Continuing with analysis response.',
+                    str(vector_error),
+                )
+                # Continue - the analysis is still returned to the user
+            else:
+                return result
         except HTTPException:
             raise
         except Exception as e:
@@ -138,10 +218,31 @@ def create_analysis_router(config: AppConfig) -> APIRouter:
             ) from e
 
     @router.get(
-        '/health', summary='Health check', description='Check if the analysis service is available'
+        '/health',
+        summary='Health check',
+        description='Check if the analysis service is available',
     )
-    async def health_check() -> dict:
+    async def health_check() -> dict[str, str]:
         """Health check for analysis endpoint."""
-        return {'status': 'healthy', 'service': 'ArtMentor AI - Analysis'}
+        return {
+            'status': 'healthy',
+            'service': 'ArtMentor AI - Analysis',
+        }
+
+    @router.get(
+        '/vector-db-health',
+        summary='Vector Database health check',
+        description='Check if the vector database is accessible',
+    )
+    async def vector_db_health() -> dict[str, str]:
+        """Health check for vector database connection."""
+        is_healthy = vector_service.health_check()
+        status_text = 'healthy' if is_healthy else 'unavailable'
+
+        return {
+            'status': status_text,
+            'service': 'ArtMentor AI - Vector Database',
+            'database': 'Qdrant',
+        }
 
     return router

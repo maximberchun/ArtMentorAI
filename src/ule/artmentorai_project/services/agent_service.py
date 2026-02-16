@@ -1,11 +1,12 @@
 """AI Agent service for artwork analysis using Pydantic AI and Gemini."""
 
 import base64
+import os
 
-from config import AppConfig
-from models import AnalysisResponse
 from pydantic_ai import Agent
-from pydantic_ai.models.gemini import GeminiModel
+
+from ..config import AppConfig
+from ..models import AnalysisResponse
 
 
 class AgentService:
@@ -22,9 +23,7 @@ class AgentService:
         self.logger = config.logger
 
         # Initialize Gemini model
-        self.gemini_model = GeminiModel(
-            model_name=config.gemini.model_name, api_key=config.gemini.api_key
-        )
+        os.environ['GEMINI_API_KEY'] = config.gemini.api_key
 
         # System Prompt - Defines the agent role
         system_prompt = """You are an expert and rigorous art teacher with over 20 years of
@@ -47,7 +46,7 @@ class AgentService:
 
         # Create agent
         self.agent = Agent(
-            model=self.gemini_model,
+            model=config.gemini.model_name,  # Reads from .env
             result_type=AnalysisResponse,
             system_prompt=system_prompt,
         )
@@ -60,7 +59,7 @@ class AgentService:
         mime_type: str = 'image/jpeg',  # noqa: ARG002
     ) -> AnalysisResponse:
         """
-        Analyze an artwork image using Gemini 2.5 Pro.
+        Analyze an artwork image using Gemini 2.5 Flash.
 
         Args:
             image_bytes: Raw image bytes to analyze
@@ -88,15 +87,35 @@ class AgentService:
 
                     Respond ONLY in valid JSON format, with no additional explanations."""
 
-            self.logger.info('Starting artwork analysis with Gemini 2.5 Pro')
+            self.logger.info('Starting artwork analysis with Gemini 2.5 Flash')
 
             # Call agent (Pydantic AI handles image multimodal with Gemini)
             result = await self.agent.run(user_prompt=prompt)
+            analysis_data = result.data
 
-            self.logger.info('Analysis completed. Score: %s/10', result.data.score)
+            # If result is a dict, convert to AnalysisResponse
+            if isinstance(analysis_data, dict):
+                analysis_data = AnalysisResponse(**analysis_data)
+            elif not isinstance(analysis_data, AnalysisResponse):
+                # Try to convert via model_validate
+                try:
+                    analysis_data = AnalysisResponse.model_validate(analysis_data)
+                except (TypeError, ValueError):
+                    # Last resort: convert to dict then to model
+                    if hasattr(analysis_data, 'model_dump'):
+                        analysis_data = AnalysisResponse(**analysis_data.model_dump())
+                    else:
+                        analysis_data = AnalysisResponse(**dict(analysis_data))
+
+            self.logger.info('Analysis completed. Score: %s/10', analysis_data.score)
+            if hasattr(analysis_data, 'model_dump'):
+                return analysis_data.model_dump()
+            if isinstance(analysis_data, dict):
+                return analysis_data
+            return AnalysisResponse(**vars(analysis_data))
         except Exception as e:
             self.logger.exception('Error analyzing image')
             msg = f'Gemini image analysis error: {e!s}'
             raise ValueError(msg) from e
         else:
-            return result.data
+            return result.data if hasattr(result, 'data') else result
