@@ -1,9 +1,8 @@
 """AI Agent service for artwork analysis using Pydantic AI and Gemini."""
 
-import base64
 import os
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, BinaryContent
 
 from ..config import AppConfig
 from ..models import AnalysisResponse
@@ -56,7 +55,7 @@ class AgentService:
     async def analyze_image(
         self,
         image_bytes: bytes,
-        mime_type: str = 'image/jpeg',  # noqa: ARG002
+        mime_type: str = 'image/jpeg',
     ) -> AnalysisResponse:
         """
         Analyze an artwork image using Gemini 2.5 Flash.
@@ -74,7 +73,7 @@ class AgentService:
         """
         try:
             # Encode image to base64
-            base64.standard_b64encode(image_bytes).decode('utf-8')
+            image_content = BinaryContent(data=image_bytes, media_type=mime_type)
 
             # Create user prompt
             prompt = """Please analyze this artwork in detail and provide a structured critique.
@@ -90,7 +89,7 @@ class AgentService:
             self.logger.info('Starting artwork analysis with Gemini 2.5 Flash')
 
             # Call agent (Pydantic AI handles image multimodal with Gemini)
-            result = await self.agent.run(user_prompt=prompt)
+            result = await self.agent.run([prompt, image_content])
             analysis_data = result.data
 
             # If result is a dict, convert to AnalysisResponse
