@@ -3,13 +3,14 @@
 This module provides REST endpoints for:
 - Artwork critique generation using Gemini AI
 - Automatic storage in vector database for future reference
+- Multimodal input support (image + optional user comments)
 - Error handling that doesn't break the API if vector DB is down
 """
 
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
 from ..config import AppConfig
 from ..models import AnalysisResponse
@@ -134,14 +135,17 @@ def create_analysis_router(config: AppConfig) -> APIRouter:
     @router.post(
         '/critique',
         summary='Analyze an artwork',
-        description='Send an image for structured feedback with score and recommendations',
+        description="""Send an image and optional comments for structured feedback with score
+        and recommendations""",
     )
     async def critique_artwork(
-        file: Annotated[UploadFile, File()],
+        file: Annotated[UploadFile | None, File()] = None,
+        user_comments: Annotated[str | None, Form()] = None,
     ) -> AnalysisResponse:
         """
-        Main endpoint for artwork analysis with automatic memory storage.
+        Main endpoint for artwork analysis with multimodal input support.
 
+        Accepts both image file and optional user comments/questions.
         Processes artwork image through Gemini AI and stores the critique
         in vector database for long-term memory (RAG).
 
@@ -149,7 +153,8 @@ def create_analysis_router(config: AppConfig) -> APIRouter:
         analysis even if vector DB is temporarily unavailable.
 
         Args:
-            file: Image file to analyze
+            file: Image file to analyze (required)
+            user_comments: Optional student comments about their work
 
         Returns:
             AnalysisResponse: JSON with summary, score, technical_errors, and advice
@@ -171,12 +176,20 @@ def create_analysis_router(config: AppConfig) -> APIRouter:
             # Validate size and check if not empty
             _validate_file_size(content, config.upload.max_file_size_mb)
 
-            config.logger.info('Analyzing image: %s', file.filename)
+            # Log the request with context
+            if user_comments:
+                config.logger.info(
+                    'Analyzing image: %s (with user comments)',
+                    file.filename,
+                )
+            else:
+                config.logger.info('Analyzing image: %s', file.filename)
 
-            # Analyze with Gemini AI agent
+            # Analyze with Gemini AI agent (pass user comments if provided)
             result = await agent_service.analyze_image(
                 image_bytes=content,
                 mime_type=mime_type,
+                user_text=user_comments,
             )
 
             # ============== RAG: Store critique in vector database ==============
@@ -206,8 +219,10 @@ def create_analysis_router(config: AppConfig) -> APIRouter:
                     str(vector_error),
                 )
                 # Continue - the analysis is still returned to the user
+
             else:
                 return result
+
         except HTTPException:
             raise
         except Exception as e:

@@ -56,6 +56,7 @@ class AgentService:
         self,
         image_bytes: bytes,
         mime_type: str = 'image/jpeg',
+        user_text: str | None = None,
     ) -> AnalysisResponse:
         """
         Analyze an artwork image using Gemini 2.5 Flash.
@@ -76,17 +77,38 @@ class AgentService:
             image_content = BinaryContent(data=image_bytes, media_type=mime_type)
 
             # Create user prompt
-            prompt = """Please analyze this artwork in detail and provide a structured critique.
+            if user_text:
+                # Multimodal: user provided context/concerns
+                prompt = f"""The student provided this context: '{user_text}'
+                Analyze the artwork focusing on their specific concerns, but also cover general technical
+                aspects such as:
+                - How well they addressed their stated concerns
+                - Composition, technique, anatomy, and perspective
+                - Concrete technical errors
+                - A fair score from 1-10
+                - Practical advice for improvement
 
-                    Be specific regarding:
-                    - Identified technical strengths
-                    - Concrete technical errors (anatomy, perspective, composition, etc.)
-                    - A fair score
-                    - Practical advice for improvement
+                Respond ONLY in valid JSON format, without additional explanations."""
 
-                    Respond ONLY in valid JSON format, with no additional explanations."""
+                self.logger.info(
+                    'Starting artwork analysis with Gemini %s (with user context)',
+                    self.config.gemini.model_name,
+                )
+            else:
+                # Default: rigorous analysis without specific context
+                prompt = """Please analyze this artwork in detail and provide structured feedback.
+                Be specific about:
+                - Identified technical strengths
+                - Concrete technical errors (anatomy, perspective, composition, etc.)
+                - A fair score from 1-10
+                - Practical advice for improvement
 
-            self.logger.info('Starting artwork analysis with Gemini 2.5 Flash')
+                Respond ONLY in valid JSON format, without additional explanations."""
+
+            self.logger.info(
+                'Starting artwork analysis with Gemini %s (standard analysis)',
+                self.config.gemini.model_name,
+            )
 
             # Call agent (Pydantic AI handles image multimodal with Gemini)
             result = await self.agent.run([prompt, image_content])
