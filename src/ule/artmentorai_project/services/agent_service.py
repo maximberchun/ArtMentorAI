@@ -64,6 +64,7 @@ class AgentService:
         Args:
             image_bytes: Raw image bytes to analyze
             mime_type: MIME type of the image (image/jpeg, image/png, etc.)
+            user_text: Optional user-provided context or specific concerns about the artwork
 
         Returns:
             AnalysisResponse: Structured analysis with summary, score, errors, and advice
@@ -80,8 +81,8 @@ class AgentService:
             if user_text:
                 # Multimodal: user provided context/concerns
                 prompt = f"""The student provided this context: '{user_text}'
-                Analyze the artwork focusing on their specific concerns, but also cover general technical
-                aspects such as:
+                Analyze the artwork focusing on their specific concerns, but also cover general
+                technical aspects such as:
                 - How well they addressed their stated concerns
                 - Composition, technique, anatomy, and perspective
                 - Concrete technical errors
