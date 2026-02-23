@@ -7,6 +7,28 @@ from pydantic_ai import Agent, BinaryContent
 from ..config import AppConfig
 from ..models import AnalysisResponse
 
+_BASE_PROMPT = (
+    'Please analyze this artwork in detail and provide a structured critique.\n'
+    'Be specific about:\n'
+    '- Identified technical strengths\n'
+    '- Concrete technical errors (anatomy, perspective, composition, etc.)\n'
+    '- A fair score from 1-10\n'
+    '- Practical advice for improvement\n\n'
+    'Respond ONLY in valid JSON format, without additional explanations.'
+)
+
+_USER_CONTEXT_TEMPLATE = (
+    "USER COMMENT: '{user_input}'. "
+    "Please address the user's specific concerns in your critique "
+    'while also covering general technical aspects.\n\n'
+    'Be specific about:\n'
+    '- How well the user addressed their stated concerns\n'
+    '- Concrete technical errors (anatomy, perspective, composition, etc.)\n'
+    '- A fair score from 1-10\n'
+    '- Practical and actionable advice for improvement\n\n'
+    'Respond ONLY in valid JSON format, without additional explanations.'
+)
+
 
 class AgentService:
     """Service for AI-powered artwork analysis using Pydantic AI and Gemini."""
@@ -52,11 +74,31 @@ class AgentService:
 
         self.logger.info('AgentService initialized successfully')
 
+    @staticmethod
+    def _build_prompt(user_input: str | None) -> str:
+        """Construct the user-turn prompt sent to Gemini.
+
+        When the user has provided a comment, the comment is surfaced at the
+        top of the prompt so that Gemini addresses it explicitly before moving
+        on to the standard technical checklist.  When no comment is present the
+        base prompt is used unchanged.
+
+        Args:
+            user_input: Optional free-text comment from the user, e.g.
+                        "I struggled with the nose".
+
+        Returns:
+            A fully-formed prompt string ready to pass to ``agent.run()``.
+        """
+        if user_input and user_input.strip():
+            return _USER_CONTEXT_TEMPLATE.format(user_input=user_input.strip())
+        return _BASE_PROMPT
+
     async def analyze_image(
         self,
         image_bytes: bytes,
         mime_type: str = 'image/jpeg',
-        user_text: str | None = None,
+        user_input: str | None = None,
     ) -> AnalysisResponse:
         """
         Analyze an artwork image using Gemini 2.5 Flash.
@@ -64,7 +106,7 @@ class AgentService:
         Args:
             image_bytes: Raw image bytes to analyze
             mime_type: MIME type of the image (image/jpeg, image/png, etc.)
-            user_text: Optional user-provided context or specific concerns about the artwork
+            user_input: Optional user-provided context or specific concerns about the artwork
 
         Returns:
             AnalysisResponse: Structured analysis with summary, score, errors, and advice
@@ -78,38 +120,18 @@ class AgentService:
             image_content = BinaryContent(data=image_bytes, media_type=mime_type)
 
             # Create user prompt
-            if user_text:
-                # Multimodal: user provided context/concerns
-                prompt = f"""The student provided this context: '{user_text}'
-                Analyze the artwork focusing on their specific concerns, but also cover general
-                technical aspects such as:
-                - How well they addressed their stated concerns
-                - Composition, technique, anatomy, and perspective
-                - Concrete technical errors
-                - A fair score from 1-10
-                - Practical advice for improvement
+            prompt = self._build_prompt(user_input)
 
-                Respond ONLY in valid JSON format, without additional explanations."""
-
+            if user_input and user_input.strip():
                 self.logger.info(
-                    'Starting artwork analysis with Gemini %s (with user context)',
+                    'Starting artwork analysis with Gemini %s (with user comment)',
                     self.config.gemini.model_name,
                 )
             else:
-                # Default: rigorous analysis without specific context
-                prompt = """Please analyze this artwork in detail and provide structured feedback.
-                Be specific about:
-                - Identified technical strengths
-                - Concrete technical errors (anatomy, perspective, composition, etc.)
-                - A fair score from 1-10
-                - Practical advice for improvement
-
-                Respond ONLY in valid JSON format, without additional explanations."""
-
-            self.logger.info(
-                'Starting artwork analysis with Gemini %s (standard analysis)',
-                self.config.gemini.model_name,
-            )
+                self.logger.info(
+                    'Starting artwork analysis with Gemini %s (standard analysis)',
+                    self.config.gemini.model_name,
+                )
 
             # Call agent (Pydantic AI handles image multimodal with Gemini)
             result = await self.agent.run([prompt, image_content])
@@ -139,5 +161,3 @@ class AgentService:
             self.logger.exception('Error analyzing image')
             msg = f'Gemini image analysis error: {e!s}'
             raise ValueError(msg) from e
-        else:
-            return result.data if hasattr(result, 'data') else result

@@ -183,16 +183,19 @@ class VectorService:
         self,
         critique: ArtCritique,
         filename: str,
+        user_id: str,
     ) -> str | None:
         """Save artwork critique to vector database.
 
-        Generates embeddings from critique text and stores in Qdrant
-        with metadata about the analysis.
+        Generates an embedding from the critique text and upserts a point into
+        Qdrant.  The ``user_id`` is stored in the payload so that future
+        similarity searches can be scoped to a single tenant with a Qdrant
+        filter (``must: [{key: "user_id", match: {value: user_id}}]``).
 
         Args:
             critique: ArtCritique object with analysis data
             filename: Name/ID of the artwork file
-
+            user_id: Unique identifier for the user who owns the critique
         Returns:
             Optional[str]: Point ID if successful, None if failed
 
@@ -205,7 +208,8 @@ class VectorService:
 
             # Generate embedding from critique text
             text_for_embedding = critique.get_text_for_embedding()
-            self.logger.debug('Generating embedding for file: %s', filename)
+
+            self.logger.debug('Generating embedding for file: %s (user_id: %s)', filename, user_id)
 
             embeddings_generator = self.embedding_model.embed(text_for_embedding)
             embeddings_list = list(embeddings_generator)
@@ -220,6 +224,7 @@ class VectorService:
                 'summary': critique.summary,
                 'advice': critique.constructive_advice,
                 'timestamp': critique.timestamp,
+                'user_id': user_id,
             }
 
             # Upsert point to Qdrant
@@ -234,7 +239,12 @@ class VectorService:
                 ],
             )
 
-            self.logger.info('Critique saved to Qdrant: %s (point_id: %s)', filename, point_id)
+            self.logger.info(
+                'Critique saved to Qdrant: %s (point_id: %s, user_id: %s)',
+                filename,
+                point_id,
+                user_id,
+            )
             return str(point_id)
 
         except TypeError:
@@ -288,6 +298,7 @@ class VectorService:
                     'summary': result.payload.get('summary'),
                     'advice': result.payload.get('advice'),
                     'timestamp': result.payload.get('timestamp'),
+                    'user_id': result.payload.get('user_id'),
                 }
                 for result in search_results
             ]

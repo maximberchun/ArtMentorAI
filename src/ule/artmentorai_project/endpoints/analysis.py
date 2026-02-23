@@ -17,6 +17,24 @@ from ..models import AnalysisResponse
 from ..services import AgentService
 from ..services.vector_service import ArtCritique, VectorService
 
+_MIME_ALIASES: dict[str, str] = {
+    'image/jpg': 'image/jpeg',
+    'image/jpe': 'image/jpeg',
+    'image/tif': 'image/tiff',
+}
+
+
+def _normalise_mime_type(mime: str) -> str:
+    """Canonicalise non-standard MIME aliases to their registered IANA values.
+
+    Args:
+        mime: Raw MIME type string reported by the client.
+
+    Returns:
+        The canonical MIME type string (lowercased, alias-resolved).
+    """
+    return _MIME_ALIASES.get(mime.lower(), mime.lower())
+
 
 def get_agent_service(config: AppConfig) -> AgentService:
     """Dependency injection for AgentService."""
@@ -39,6 +57,31 @@ def get_vector_service(config: AppConfig) -> VectorService:
         port=6333,
         logger=config.logger,
     )
+
+
+def _validate_image_content_type(content_type: str | None) -> str:
+    """Enforce that the uploaded file is an image.
+
+    Uses a prefix check on the MIME type so that any ``image/*`` variant
+    (jpeg, png, webp, gif, …) is accepted without maintaining an allowlist,
+    while still rejecting everything else.
+
+    Args:
+        content_type: The ``content_type`` reported by the browser / client.
+
+    Returns:
+        The validated, normalised MIME type string.
+
+    Raises:
+        HTTPException 415: If the content type is absent or not an image.
+    """
+    mime = _normalise_mime_type(content_type or '')
+    if not mime.startswith('image/'):
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail='Unsupported media type. Only images are allowed.',
+        )
+    return mime
 
 
 def _validate_image_file(
@@ -108,6 +151,29 @@ def _validate_file_size(
         )
 
 
+def _require_at_least_one_input(
+    file: UploadFile | None,
+    user_input: str | None,
+) -> None:
+    """Raise HTTP 422 if neither a file nor a text comment was provided.
+
+    Extracted into a standalone function so the ``raise`` is not sitting
+    directly inside a ``try`` block (Ruff TRY301).
+
+    Args:
+        file:       The uploaded file, or ``None`` if omitted.
+        user_input: The user's text comment, or ``None`` / blank if omitted.
+
+    Raises:
+        HTTPException 422: If both inputs are absent.
+    """
+    if file is None and not (user_input and user_input.strip()):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail='Provide at least an image, a text comment, or both.',
+        )
+
+
 def create_analysis_router(config: AppConfig) -> APIRouter:
     """
     Create analysis router with configuration.
@@ -139,57 +205,79 @@ def create_analysis_router(config: AppConfig) -> APIRouter:
         and recommendations""",
     )
     async def critique_artwork(
-        file: Annotated[UploadFile | None, File()] = None,
-        user_comments: Annotated[str | None, Form()] = None,
+        user_id: Annotated[
+            str,
+            Form(description='Mandatory user identifier for the RAG system.'),
+        ],
+        file: Annotated[
+            UploadFile | None, File(description='The artwork image to analyse.')
+        ] = None,
+        user_input: Annotated[
+            str | None,
+            Form(description='Optional user comments about their work.'),
+        ] = None,
     ) -> AnalysisResponse:
         """
         Main endpoint for artwork analysis with multimodal input support.
 
-        Accepts both image file and optional user comments/questions.
-        Processes artwork image through Gemini AI and stores the critique
-        in vector database for long-term memory (RAG).
+        Accepts an image file, an optional user comment, and a mandatory
+        ``user_id`` required by the downstream Vector DB RAG system.
 
-        Database failures are gracefully handled - the API returns the
-        analysis even if vector DB is temporarily unavailable.
+        Validation order (fail-fast):
+        1. ``content_type`` must start with ``"image/"``               → HTTP 415
+        2. File bytes must not exceed ``MAX_FILE_SIZE_MB`` from .env   → HTTP 413
+        3. Extension and MIME type must be in allowlist                → HTTP 400
+        4. File must not be empty                                      → HTTP 400
+        5. At least one of file or user_input must be provided         → HTTP 422
+
+        Database failures are gracefully handled — the API still returns the
+        analysis even if the vector DB is temporarily unavailable.
 
         Args:
-            file: Image file to analyze (required)
-            user_comments: Optional student comments about their work
+            file:       Image file to analyse (required).
+            user_input: Optional user comments about their artwork.
+            user_id:    Mandatory user identifier for the RAG pipeline.
 
         Returns:
-            AnalysisResponse: JSON with summary, score, technical_errors, and advice
+            AnalysisResponse: JSON with summary, score, technical_errors, advice.
 
         Raises:
-            HTTPException: If validation or processing fails
+            HTTPException 415: Unsupported file type.
+            HTTPException 413: File exceeds MAX_FILE_SIZE_MB limit (.env).
+            HTTPException 400: Invalid extension / empty file.
+            HTTPException 500: Unexpected processing error.
         """
         try:
-            # Validate file
-            _extension, mime_type = _validate_image_file(
-                filename=file.filename or 'unknown',
-                content_type=file.content_type,
-                config=config,
-            )
+            # File validation
+            image_bytes: bytes | None = None
+            mime_type: str | None = None
 
-            # Read content
-            content = await file.read()
+            if file is not None:
+                mime_type = _validate_image_content_type(file.content_type)
 
-            # Validate size and check if not empty
-            _validate_file_size(content, config.upload.max_file_size_mb)
+                image_bytes = await file.read()
+
+                _validate_file_size(image_bytes, config.upload.max_file_size_mb)
+
+                _extension, mime_type = _validate_image_file(
+                    filename=file.filename or 'unknown',
+                    content_type=mime_type,
+                    config=config,
+                )
 
             # Log the request with context
-            if user_comments:
-                config.logger.info(
-                    'Analyzing image: %s (with user comments)',
-                    file.filename,
-                )
-            else:
-                config.logger.info('Analyzing image: %s', file.filename)
+            config.logger.info(
+                'Analyzing input — file: %s | user_input: %s | user_id: %s',
+                file.filename if file else 'none',
+                'yes' if user_input else 'none',
+                user_id,
+            )
 
-            # Analyze with Gemini AI agent (pass user comments if provided)
+            # Analyze with Gemini AI agent
             result = await agent_service.analyze_image(
-                image_bytes=content,
+                image_bytes=image_bytes,
                 mime_type=mime_type,
-                user_text=user_comments,
+                user_input=user_input,
             )
 
             # ============== RAG: Store critique in vector database ==============
@@ -204,11 +292,12 @@ def create_analysis_router(config: AppConfig) -> APIRouter:
                 critique = ArtCritique.from_analysis_response(result)
                 # Save to Qdrant with filename as identifier
                 filename = file.filename or 'unknown'
-                vector_service.save_critique(critique, filename)
+                vector_service.save_critique(critique, filename, user_id=user_id)
 
                 config.logger.info(
-                    'Critique stored in vector database: %s',
+                    'Critique stored in vector database: %s (user_id=%s)',
                     filename,
+                    user_id,
                 )
 
             except (ConnectionError, TimeoutError, OSError) as vector_error:
