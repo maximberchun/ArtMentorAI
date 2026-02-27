@@ -29,6 +29,14 @@ _USER_CONTEXT_TEMPLATE = (
     'Respond ONLY in valid JSON format, without additional explanations.'
 )
 
+_PAST_CRITIQUES_SECTION = (
+    '\n\n---\n'
+    "USER HISTORY (Past Memory): '{past_critiques}'.\n"
+    'INSTRUCTION: Review whether the user has improved on these past errors '
+    'or whether they are repeating them. '
+    'Be encouraging if they improved, but correct them gently if they repeat mistakes.'
+)
+
 
 class AgentService:
     """Service for AI-powered artwork analysis using Pydantic AI and Gemini."""
@@ -70,12 +78,16 @@ class AgentService:
             model=config.gemini.model_name,  # Reads from .env
             result_type=AnalysisResponse,
             system_prompt=system_prompt,
+            retries=3,
         )
 
         self.logger.info('AgentService initialized successfully')
 
     @staticmethod
-    def _build_prompt(user_input: str | None) -> str:
+    def _build_prompt(
+        user_input: str | None,
+        past_critiques: str | None,
+    ) -> str:
         """Construct the user-turn prompt sent to Gemini.
 
         When the user has provided a comment, the comment is surfaced at the
@@ -86,19 +98,29 @@ class AgentService:
         Args:
             user_input: Optional free-text comment from the user, e.g.
                         "I struggled with the nose".
+            past_critiques: Pre-formatted string of past critique summaries and
+                        advice retrieved from the vector DB, or ``None`` if
+                        no history exists yet.
 
         Returns:
             A fully-formed prompt string ready to pass to ``agent.run()``.
         """
         if user_input and user_input.strip():
-            return _USER_CONTEXT_TEMPLATE.format(user_input=user_input.strip())
-        return _BASE_PROMPT
+            prompt = _USER_CONTEXT_TEMPLATE.format(user_input=user_input.strip())
+        else:
+            prompt = _BASE_PROMPT
+
+        if past_critiques and past_critiques.strip():
+            prompt += _PAST_CRITIQUES_SECTION.format(past_critiques=past_critiques.strip())
+
+        return prompt
 
     async def analyze_image(
         self,
-        image_bytes: bytes,
-        mime_type: str = 'image/jpeg',
+        image_bytes: bytes | None = None,
+        mime_type: str | None = None,
         user_input: str | None = None,
+        past_critiques: str | None = None,
     ) -> AnalysisResponse:
         """
         Analyze an artwork image using Gemini 2.5 Flash.
@@ -107,7 +129,7 @@ class AgentService:
             image_bytes: Raw image bytes to analyze
             mime_type: MIME type of the image (image/jpeg, image/png, etc.)
             user_input: Optional user-provided context or specific concerns about the artwork
-
+            past_critiques: Optional string of previous critiques to inform the analysis
         Returns:
             AnalysisResponse: Structured analysis with summary, score, errors, and advice
 
@@ -116,11 +138,13 @@ class AgentService:
             ValidationError: If response doesn't match AnalysisResponse model
         """
         try:
-            # Encode image to base64
-            image_content = BinaryContent(data=image_bytes, media_type=mime_type)
-
             # Create user prompt
-            prompt = self._build_prompt(user_input)
+            prompt = self._build_prompt(user_input, past_critiques)
+            message: list = [prompt]
+            if image_bytes is not None:
+                message.append(
+                    BinaryContent(data=image_bytes, media_type=mime_type or 'image/jpeg')
+                )
 
             if user_input and user_input.strip():
                 self.logger.info(
@@ -134,7 +158,7 @@ class AgentService:
                 )
 
             # Call agent (Pydantic AI handles image multimodal with Gemini)
-            result = await self.agent.run([prompt, image_content])
+            result = await self.agent.run(message)
             analysis_data = result.data
 
             # If result is a dict, convert to AnalysisResponse

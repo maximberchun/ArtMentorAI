@@ -13,9 +13,7 @@ class AnalysisResponse(BaseModel):
     Pydantic automatically validates types, ranges, and string lengths.
     """
 
-    summary: str = Field(
-        ..., min_length=10, max_length=500, description='General summary of the artwork analysis'
-    )
+    summary: str = Field(..., min_length=10, description='General summary of the artwork analysis')
 
     score: int = Field(..., ge=1, le=10, description='Score from 1 (beginner) to 10 (mastery)')
 

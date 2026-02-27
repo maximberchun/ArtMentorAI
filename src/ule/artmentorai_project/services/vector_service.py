@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 
 from fastembed.embedding import FlagEmbedding
 from qdrant_client import QdrantClient
+from qdrant_client.http import models
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 from qdrant_client.http.models import Distance, PointStruct, VectorParams
 
@@ -264,6 +265,7 @@ class VectorService:
     def search_similar_critiques(
         self,
         query_text: str,
+        user_id: str,
         limit: int = 5,
     ) -> list[dict]:
         """Search for similar critiques in the vector database.
@@ -271,6 +273,7 @@ class VectorService:
         Args:
             query_text: Text to search for similar critiques
             limit: Maximum number of results to return
+            user_id: Unique identifier for the user to scope search results
 
         Returns:
             list[dict]: List of similar critiques with scores
@@ -280,27 +283,35 @@ class VectorService:
         """
         try:
             # Generate embedding for query
-            query_embedding = self.embedding_model.embed(query_text).tolist()
+            query_embedding = next(iter(self.embedding_model.embed(query_text))).tolist()
 
             # Search in Qdrant
-            search_results = self.client.search(
+            response = self.client.query_points(
                 collection_name=self.COLLECTION_NAME,
-                query_vector=query_embedding,
+                query=query_embedding,
                 limit=limit,
+                query_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key='user_id',
+                            match=models.MatchValue(value=user_id),
+                        )
+                    ]
+                ),
             )
 
             # Format results
             results = [
                 {
-                    'similarity_score': result.score,
-                    'filename': result.payload.get('filename'),
-                    'score': result.payload.get('score'),
-                    'summary': result.payload.get('summary'),
-                    'advice': result.payload.get('advice'),
-                    'timestamp': result.payload.get('timestamp'),
-                    'user_id': result.payload.get('user_id'),
+                    'similarity_score': point.score,
+                    'filename': point.payload.get('filename'),
+                    'score': point.payload.get('score'),
+                    'summary': point.payload.get('summary'),
+                    'advice': point.payload.get('advice'),
+                    'timestamp': point.payload.get('timestamp'),
+                    'user_id': point.payload.get('user_id'),
                 }
-                for result in search_results
+                for point in response.points
             ]
 
             self.logger.debug('Found %d similar critiques for query', len(results))

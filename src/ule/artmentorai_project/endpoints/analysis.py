@@ -174,7 +174,7 @@ def _require_at_least_one_input(
         )
 
 
-def create_analysis_router(config: AppConfig) -> APIRouter:
+def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901
     """
     Create analysis router with configuration.
 
@@ -273,11 +273,53 @@ def create_analysis_router(config: AppConfig) -> APIRouter:
                 user_id,
             )
 
+            past_critiques_str: str | None = None
+            try:
+                # Use the user's own comment as the semantic query when
+                # available; fall back to a generic drawing-error query so
+                # we always attempt to surface relevant history.
+                memory_query = (
+                    user_input.strip()
+                    if user_input and user_input.strip()
+                    else 'technical drawing errors anatomy perspective'
+                )
+                past_records = vector_service.search_similar_critiques(
+                    query_text=memory_query,
+                    user_id=user_id,
+                )
+                if past_records:
+                    past_critiques_str = (
+                        ''.join(
+                            f'- Summary: {r["summary"]} | Advice: {r["advice"]}'
+                            for r in past_records
+                            if r.get('summary') or r.get('advice')
+                        )
+                        or None
+                    )  # collapse to None if every record had empty fields
+                    config.logger.debug(
+                        'Injecting %d past critique(s) into prompt for user_id=%s',
+                        len(past_records),
+                        user_id,
+                    )
+                else:
+                    config.logger.debug(
+                        'No past critiques found for user_id=%s — proceeding without memory',
+                        user_id,
+                    )
+            except (ConnectionError, TimeoutError, OSError, RuntimeError) as memory_error:
+                config.logger.warning(
+                    'Memory retrieval failed for user_id=%s: %s. '
+                    'Proceeding without history context.',
+                    user_id,
+                    str(memory_error),
+                )
+
             # Analyze with Gemini AI agent
             result = await agent_service.analyze_image(
                 image_bytes=image_bytes,
                 mime_type=mime_type,
                 user_input=user_input,
+                past_critiques=past_critiques_str,
             )
 
             # ============== RAG: Store critique in vector database ==============
@@ -291,12 +333,12 @@ def create_analysis_router(config: AppConfig) -> APIRouter:
 
                 critique = ArtCritique.from_analysis_response(result)
                 # Save to Qdrant with filename as identifier
-                filename = file.filename or 'unknown'
-                vector_service.save_critique(critique, filename, user_id=user_id)
+                artwork_filename = (file.filename if file is not None else None) or 'unknown'
+                vector_service.save_critique(critique, artwork_filename, user_id=user_id)
 
                 config.logger.info(
                     'Critique stored in vector database: %s (user_id=%s)',
-                    filename,
+                    artwork_filename,
                     user_id,
                 )
 
