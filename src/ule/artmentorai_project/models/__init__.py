@@ -14,7 +14,11 @@ infrastructure concerns (`core`).
 
 from .responses import AnalysisResponse
 from .responses.analysis_response import AnalysisResponse
+from .user_profile import UserProfile, UserProfileBase
 
 __all__ = [
     'AnalysisResponse',
+    'UserProfile',
+    'UserProfileBase',
 ]
+

@@ -37,6 +37,14 @@ _PAST_CRITIQUES_SECTION = (
     'Be encouraging if they improved, but correct them gently if they repeat mistakes.'
 )
 
+_PROFILE_CONTEXT_SECTION = (
+    '\n\n---\n'
+    "USER PROFILE: '{profile_context}'.\n"
+    'INSTRUCTION: Tailor your critique to the user\'s stated goals, preferred '
+    'and disliked styles, favorite artists, and experience level. When giving '
+    'advice, connect it explicitly to these preferences when helpful.'
+)
+
 
 class AgentService:
     """Service for AI-powered artwork analysis using Pydantic AI and Gemini."""
@@ -87,6 +95,7 @@ class AgentService:
     def _build_prompt(
         user_input: str | None,
         past_critiques: str | None,
+        profile_context: str | None,
     ) -> str:
         """Construct the user-turn prompt sent to Gemini.
 
@@ -99,8 +108,10 @@ class AgentService:
             user_input: Optional free-text comment from the user, e.g.
                         "I struggled with the nose".
             past_critiques: Pre-formatted string of past critique summaries and
-                        advice retrieved from the vector DB, or ``None`` if
-                        no history exists yet.
+                advice retrieved from the vector DB, or ``None`` if
+                no history exists yet.
+            profile_context: Optional textual summary of the user profile used
+                to personalise the critique (goals, preferences, artists, level).
 
         Returns:
             A fully-formed prompt string ready to pass to ``agent.run()``.
@@ -109,6 +120,11 @@ class AgentService:
             prompt = _USER_CONTEXT_TEMPLATE.format(user_input=user_input.strip())
         else:
             prompt = _BASE_PROMPT
+
+        if profile_context and profile_context.strip():
+            prompt += _PROFILE_CONTEXT_SECTION.format(
+                profile_context=profile_context.strip(),
+            )
 
         if past_critiques and past_critiques.strip():
             prompt += _PAST_CRITIQUES_SECTION.format(past_critiques=past_critiques.strip())
@@ -121,6 +137,7 @@ class AgentService:
         mime_type: str | None = None,
         user_input: str | None = None,
         past_critiques: str | None = None,
+        profile_context: str | None = None,
     ) -> AnalysisResponse:
         """
         Analyze an artwork request using Gemini (multimodal: image and/or text).
@@ -136,6 +153,8 @@ class AgentService:
             mime_type: MIME type of the image (image/jpeg, image/png, etc.).
             user_input: Optional user-provided context or specific concerns.
             past_critiques: Optional string of previous critiques to inform the analysis.
+            profile_context: Optional textual summary of the user profile used
+                to personalise the critique (goals, preferences, artists, level).
 
         Returns:
             AnalysisResponse: Structured analysis with summary, score, errors, and advice.
@@ -145,7 +164,7 @@ class AgentService:
         """
         try:
             # Create user prompt
-            prompt = self._build_prompt(user_input, past_critiques)
+            prompt = self._build_prompt(user_input, past_critiques, profile_context)
             message: list = [prompt]
             if image_bytes is not None:
                 message.append(

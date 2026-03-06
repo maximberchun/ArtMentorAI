@@ -11,7 +11,7 @@ from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
 from starlette.middleware.cors import CORSMiddleware
 
 from .config import AppConfig
-from .endpoints import create_analysis_router
+from .endpoints import create_analysis_router, create_profile_router
 from .exceptions import UserExceptionError
 from .utils import configure_ssl
 
@@ -44,7 +44,12 @@ def create_app(config: AppConfig) -> FastAPI:
     analysis_router = create_analysis_router(config)
     app.include_router(analysis_router)
 
+    # Profile endpoint (user goals and preferences)
+    profile_router = create_profile_router(config)
+    app.include_router(profile_router)
+
     config.logger.debug('Analysis router registered at /analysis')
+    config.logger.debug('Profile router registered at /profile')
 
     # ============== Add Middleware ==============
     config.logger.info('Configuring middleware')
@@ -82,6 +87,8 @@ def create_app(config: AppConfig) -> FastAPI:
                 'critique': 'POST /analysis/critique',
                 'analysis_health': 'GET /analysis/health',
                 'vector_db_health': 'GET /analysis/vector-db-health',
+                'get_profile': 'GET /profile/{user_id}',
+                'upsert_profile': 'PUT /profile/{user_id}',
             },
         }
 

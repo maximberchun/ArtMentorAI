@@ -13,8 +13,8 @@ from typing import Annotated
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
 from ..config import AppConfig
-from ..models import AnalysisResponse
-from ..services import AgentService
+from ..models import AnalysisResponse, UserProfile
+from ..services import AgentService, ProfileService
 from ..services.vector_service import ArtCritique, VectorService
 
 _MIME_ALIASES: dict[str, str] = {
@@ -57,6 +57,24 @@ def get_vector_service(config: AppConfig) -> VectorService:
         port=6333,
         logger=config.logger,
     )
+
+
+def _format_profile_for_prompt(profile: UserProfile) -> str:
+    """Create a compact textual description of the user profile for the agent."""
+    parts: list[str] = []
+
+    if profile.goals:
+        parts.append('Goals: ' + '; '.join(profile.goals))
+    if profile.preferred_styles:
+        parts.append('Preferred styles: ' + '; '.join(profile.preferred_styles))
+    if profile.disliked_styles:
+        parts.append('Disliked styles: ' + '; '.join(profile.disliked_styles))
+    if profile.favorite_artists:
+        parts.append('Favorite artists: ' + '; '.join(profile.favorite_artists))
+    if profile.experience_level:
+        parts.append('Experience level: ' + profile.experience_level)
+
+    return ' | '.join(parts)
 
 
 def _validate_image_content_type(content_type: str | None) -> str:
@@ -198,6 +216,7 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
 
     # Initialize services
     agent_service = AgentService(config)
+    profile_service = ProfileService(logger=config.logger)
     try:
         vector_service: VectorService | None = get_vector_service(config)
     except RuntimeError as init_error:
@@ -344,12 +363,31 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                     user_id,
                 )
 
+            # Load optional user profile for personalised critique
+            profile_context_str: str | None = None
+            try:
+                profile = profile_service.get_profile(user_id)
+            except RuntimeError as e:
+                config.logger.warning(
+                    'Failed to load profile for user_id=%s: %s. Proceeding without profile.',
+                    user_id,
+                    str(e),
+                )
+            else:
+                if profile is not None:
+                    profile_context_str = _format_profile_for_prompt(profile)
+                    config.logger.debug(
+                        'Injecting profile context into prompt for user_id=%s',
+                        user_id,
+                    )
+
             # Analyze with Gemini AI agent
             result = await agent_service.analyze_image(
                 image_bytes=image_bytes,
                 mime_type=mime_type,
                 user_input=user_input,
                 past_critiques=past_critiques_str,
+                profile_context=profile_context_str,
             )
 
             # ============== RAG: Store critique in vector database ==============
