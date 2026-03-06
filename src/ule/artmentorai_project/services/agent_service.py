@@ -123,19 +123,25 @@ class AgentService:
         past_critiques: str | None = None,
     ) -> AnalysisResponse:
         """
-        Analyze an artwork image using Gemini 2.5 Flash.
+        Analyze an artwork request using Gemini (multimodal: image and/or text).
+
+        This method supports:
+
+        - Image-only analysis (when ``image_bytes`` is provided).
+        - Text-only analysis (when only ``user_input`` is provided).
+        - Combined image + text analysis enriched with optional past critiques.
 
         Args:
-            image_bytes: Raw image bytes to analyze
-            mime_type: MIME type of the image (image/jpeg, image/png, etc.)
-            user_input: Optional user-provided context or specific concerns about the artwork
-            past_critiques: Optional string of previous critiques to inform the analysis
+            image_bytes: Raw image bytes to analyze, if any.
+            mime_type: MIME type of the image (image/jpeg, image/png, etc.).
+            user_input: Optional user-provided context or specific concerns.
+            past_critiques: Optional string of previous critiques to inform the analysis.
+
         Returns:
-            AnalysisResponse: Structured analysis with summary, score, errors, and advice
+            AnalysisResponse: Structured analysis with summary, score, errors, and advice.
 
         Raises:
-            ValueError: If there's an error calling Gemini
-            ValidationError: If response doesn't match AnalysisResponse model
+            ValueError: If there's an error calling Gemini or validating the response.
         """
         try:
             # Create user prompt
@@ -161,26 +167,17 @@ class AgentService:
             result = await self.agent.run(message)
             analysis_data = result.data
 
-            # If result is a dict, convert to AnalysisResponse
-            if isinstance(analysis_data, dict):
-                analysis_data = AnalysisResponse(**analysis_data)
-            elif not isinstance(analysis_data, AnalysisResponse):
-                # Try to convert via model_validate
-                try:
+            # Normalise result to AnalysisResponse
+            if not isinstance(analysis_data, AnalysisResponse):
+                if isinstance(analysis_data, dict):
+                    analysis_data = AnalysisResponse(**analysis_data)
+                elif hasattr(analysis_data, 'model_dump'):
+                    analysis_data = AnalysisResponse(**analysis_data.model_dump())
+                else:
                     analysis_data = AnalysisResponse.model_validate(analysis_data)
-                except (TypeError, ValueError):
-                    # Last resort: convert to dict then to model
-                    if hasattr(analysis_data, 'model_dump'):
-                        analysis_data = AnalysisResponse(**analysis_data.model_dump())
-                    else:
-                        analysis_data = AnalysisResponse(**dict(analysis_data))
 
             self.logger.info('Analysis completed. Score: %s/10', analysis_data.score)
-            if hasattr(analysis_data, 'model_dump'):
-                return analysis_data.model_dump()
-            if isinstance(analysis_data, dict):
-                return analysis_data
-            return AnalysisResponse(**vars(analysis_data))
+            return analysis_data  # noqa: TRY300
         except Exception as e:
             self.logger.exception('Error analyzing image')
             msg = f'Gemini image analysis error: {e!s}'

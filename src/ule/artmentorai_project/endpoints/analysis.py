@@ -174,7 +174,7 @@ def _require_at_least_one_input(
         )
 
 
-def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901
+def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR0915
     """
     Create analysis router with configuration.
 
@@ -188,15 +188,25 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901
         prefix='/analysis',
         tags=['Analysis'],
         responses={
-            400: {'description': 'Invalid file'},
+            400: {'description': 'Invalid file (extension, MIME type, or empty file)'},
             413: {'description': 'File too large'},
+            415: {'description': 'Unsupported media type (only images allowed)'},
+            422: {'description': 'Validation error (missing image and text)'},
             500: {'description': 'Server error'},
         },
     )
 
     # Initialize services
     agent_service = AgentService(config)
-    vector_service = get_vector_service(config)
+    try:
+        vector_service: VectorService | None = get_vector_service(config)
+    except RuntimeError as init_error:
+        config.logger.warning(
+            'VectorService unavailable at startup: %s. '
+            'Continuing without long-term memory until Qdrant is restored.',
+            str(init_error),
+        )
+        vector_service = None
 
     @router.post(
         '/critique',
@@ -220,22 +230,32 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901
         """
         Main endpoint for artwork analysis with multimodal input support.
 
-        Accepts an image file, an optional user comment, and a mandatory
-        ``user_id`` required by the downstream Vector DB RAG system.
+        The endpoint accepts:
+
+        - **Image-only** requests (file provided, no user_input).
+        - **Text-only** requests (user_input provided, no file) — for
+          analysis of written descriptions or questions.
+        - **Image + text** requests (both provided) for fully contextualised
+          critiques.
+
+        The ``user_id`` is mandatory so that critiques can be associated
+        with a specific artist in the vector database.
 
         Validation order (fail-fast):
-        1. ``content_type`` must start with ``"image/"``               → HTTP 415
-        2. File bytes must not exceed ``MAX_FILE_SIZE_MB`` from .env   → HTTP 413
-        3. Extension and MIME type must be in allowlist                → HTTP 400
-        4. File must not be empty                                      → HTTP 400
-        5. At least one of file or user_input must be provided         → HTTP 422
+
+        1. At least one of ``file`` or ``user_input`` must be provided → HTTP 422.
+        2. If a file is present, ``content_type`` must start with ``"image/"`` → HTTP 415.
+        3. File bytes must not exceed ``MAX_FILE_SIZE_MB`` from .env   → HTTP 413.
+        4. Extension and MIME type must be in allowlist                → HTTP 400.
+        5. File must not be empty                                      → HTTP 400.
 
         Database failures are gracefully handled — the API still returns the
-        analysis even if the vector DB is temporarily unavailable.
+        analysis even if the vector DB is temporarily unavailable or could
+        not be initialised at startup.
 
         Args:
-            file:       Image file to analyse (required).
-            user_input: Optional user comments about their artwork.
+            file:       Optional image file to analyse.
+            user_input: Optional user comments or description of the artwork.
             user_id:    Mandatory user identifier for the RAG pipeline.
 
         Returns:
@@ -245,8 +265,12 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901
             HTTPException 415: Unsupported file type.
             HTTPException 413: File exceeds MAX_FILE_SIZE_MB limit (.env).
             HTTPException 400: Invalid extension / empty file.
+            HTTPException 422: Neither image nor text was provided.
             HTTPException 500: Unexpected processing error.
         """
+        # Ensure that at least image or text is provided.
+        _require_at_least_one_input(file=file, user_input=user_input)
+
         try:
             # File validation
             image_bytes: bytes | None = None
@@ -274,44 +298,50 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901
             )
 
             past_critiques_str: str | None = None
-            try:
-                # Use the user's own comment as the semantic query when
-                # available; fall back to a generic drawing-error query so
-                # we always attempt to surface relevant history.
-                memory_query = (
-                    user_input.strip()
-                    if user_input and user_input.strip()
-                    else 'technical drawing errors anatomy perspective'
-                )
-                past_records = vector_service.search_similar_critiques(
-                    query_text=memory_query,
-                    user_id=user_id,
-                )
-                if past_records:
-                    past_critiques_str = (
-                        ''.join(
-                            f'- Summary: {r["summary"]} | Advice: {r["advice"]}'
-                            for r in past_records
-                            if r.get('summary') or r.get('advice')
+            if vector_service is not None:
+                try:
+                    # Use the user's own comment as the semantic query when
+                    # available; fall back to a generic drawing-error query so
+                    # we always attempt to surface relevant history.
+                    memory_query = (
+                        user_input.strip()
+                        if user_input and user_input.strip()
+                        else 'technical drawing errors anatomy perspective'
+                    )
+                    past_records = vector_service.search_similar_critiques(
+                        query_text=memory_query,
+                        user_id=user_id,
+                    )
+                    if past_records:
+                        past_critiques_str = (
+                            ''.join(
+                                f'- Summary: {r["summary"]} | Advice: {r["advice"]}'
+                                for r in past_records
+                                if r.get('summary') or r.get('advice')
+                            )
+                            or None
+                        )  # collapse to None if every record had empty fields
+                        config.logger.debug(
+                            'Injecting %d past critique(s) into prompt for user_id=%s',
+                            len(past_records),
+                            user_id,
                         )
-                        or None
-                    )  # collapse to None if every record had empty fields
-                    config.logger.debug(
-                        'Injecting %d past critique(s) into prompt for user_id=%s',
-                        len(past_records),
+                    else:
+                        config.logger.debug(
+                            'No past critiques found for user_id=%s — proceeding without memory',
+                            user_id,
+                        )
+                except (ConnectionError, TimeoutError, OSError, RuntimeError) as memory_error:
+                    config.logger.warning(
+                        'Memory retrieval failed for user_id=%s: %s. '
+                        'Proceeding without history context.',
                         user_id,
+                        str(memory_error),
                     )
-                else:
-                    config.logger.debug(
-                        'No past critiques found for user_id=%s — proceeding without memory',
-                        user_id,
-                    )
-            except (ConnectionError, TimeoutError, OSError, RuntimeError) as memory_error:
-                config.logger.warning(
-                    'Memory retrieval failed for user_id=%s: %s. '
-                    'Proceeding without history context.',
+            else:
+                config.logger.debug(
+                    'VectorService not available; proceeding without memory for user_id=%s',
                     user_id,
-                    str(memory_error),
                 )
 
             # Analyze with Gemini AI agent
@@ -324,35 +354,42 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901
 
             # ============== RAG: Store critique in vector database ==============
             # This is wrapped in try/except so the API doesn't fail if DB is down
-            try:
-                config.logger.debug('Attempting to store critique in vector database')
+            if vector_service is not None:
+                try:
+                    config.logger.debug('Attempting to store critique in vector database')
 
-                # Convert analysis result to ArtCritique for vector storage
-                if isinstance(result, dict):
-                    result = AnalysisResponse(**result)
+                    # Convert analysis result to ArtCritique for vector storage
+                    if isinstance(result, dict):
+                        result = AnalysisResponse(**result)
 
-                critique = ArtCritique.from_analysis_response(result)
-                # Save to Qdrant with filename as identifier
-                artwork_filename = (file.filename if file is not None else None) or 'unknown'
-                vector_service.save_critique(critique, artwork_filename, user_id=user_id)
+                    critique = ArtCritique.from_analysis_response(result)
+                    # Save to Qdrant with filename as identifier
+                    artwork_filename = (file.filename if file is not None else None) or 'unknown'
+                    vector_service.save_critique(critique, artwork_filename, user_id=user_id)
 
-                config.logger.info(
-                    'Critique stored in vector database: %s (user_id=%s)',
-                    artwork_filename,
+                    config.logger.info(
+                        'Critique stored in vector database: %s (user_id=%s)',
+                        artwork_filename,
+                        user_id,
+                    )
+
+                except (ConnectionError, TimeoutError, OSError) as vector_error:
+                    # Log the error but don't fail the API
+                    config.logger.warning(
+                        'Failed to store critique in vector database: %s. '
+                        'Continuing with analysis response.',
+                        str(vector_error),
+                    )
+                    # Continue - the analysis is still returned to the user
+            else:
+                config.logger.debug(
+                    'Skipping vector database storage because VectorService is unavailable '
+                    '(user_id=%s)',
                     user_id,
                 )
 
-            except (ConnectionError, TimeoutError, OSError) as vector_error:
-                # Log the error but don't fail the API
-                config.logger.warning(
-                    'Failed to store critique in vector database: %s. '
-                    'Continuing with analysis response.',
-                    str(vector_error),
-                )
-                # Continue - the analysis is still returned to the user
-
-            else:
-                return result
+            # Always return the analysis even if vector DB operations failed.
+            return result  # noqa: TRY300
 
         except HTTPException:
             raise
@@ -382,7 +419,7 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901
     )
     async def vector_db_health() -> dict[str, str]:
         """Health check for vector database connection."""
-        is_healthy = vector_service.health_check()
+        is_healthy = vector_service.health_check() if vector_service is not None else False
         status_text = 'healthy' if is_healthy else 'unavailable'
 
         return {
