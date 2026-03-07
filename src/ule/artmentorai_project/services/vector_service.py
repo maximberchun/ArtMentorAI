@@ -1,11 +1,14 @@
 """Vector Database service for storing and retrieving artwork critiques.
 
 This module provides long-term memory capabilities using Qdrant vector database
-and FastEmbed for local embedding generation.
+and FastEmbed for local embedding generation. Supports both critique records
+and portfolio items in a single collection, distinguished by payload ``type``.
 """
 
 import logging
 from datetime import UTC, datetime
+from typing import Any
+from uuid import uuid4
 
 from fastembed.embedding import FlagEmbedding
 from qdrant_client import QdrantClient
@@ -15,16 +18,42 @@ from qdrant_client.http.models import Distance, PointStruct, VectorParams
 
 from ..models import AnalysisResponse
 
+# Payload type discriminator for Qdrant points
+PAYLOAD_TYPE_CRITIQUE = 'critique'
+PAYLOAD_TYPE_PORTFOLIO_ITEM = 'portfolio_item'
+
+# Score 1-10 thresholds for mapping to level estimate 1-5
+_LEVEL_THRESHOLD_1 = 2
+_LEVEL_THRESHOLD_2 = 4
+_LEVEL_THRESHOLD_3 = 6
+_LEVEL_THRESHOLD_4 = 8
+
+
+def _score_to_level_estimate(score: int) -> int:
+    """Map 1-10 score to 1-5 level estimate for progress tracking."""
+    if score <= _LEVEL_THRESHOLD_1:
+        return 1
+    if score <= _LEVEL_THRESHOLD_2:
+        return 2
+    if score <= _LEVEL_THRESHOLD_3:
+        return 3
+    if score <= _LEVEL_THRESHOLD_4:
+        return 4
+    return 5
+
 
 class ArtCritique:
     """Data model for storing artwork critiques in vector database."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         summary: str,
         score: int,
         technical_errors: list[str],
         constructive_advice: str,
+        *,
+        tags: list[str] | None = None,
+        goals_snapshot: str | None = None,
     ) -> None:
         """Initialize an ArtCritique.
 
@@ -33,11 +62,15 @@ class ArtCritique:
             score: Score from 1-10
             technical_errors: List of identified technical errors
             constructive_advice: Constructive advice for improvement
+            tags: Optional tags (style, medium, subject, etc.)
+            goals_snapshot: Optional short text snapshot of user goals at time of critique
         """
         self.summary = summary
         self.score = score
         self.technical_errors = technical_errors
         self.constructive_advice = constructive_advice
+        self.tags = tags or []
+        self.goals_snapshot = goals_snapshot
         self.timestamp = datetime.now(tz=UTC).isoformat()
 
     def get_text_for_embedding(self) -> str:
@@ -47,17 +80,39 @@ class ArtCritique:
             str: Combined text of summary and technical errors
         """
         errors_text = ' '.join(self.technical_errors)
-        return f'{self.summary} {errors_text}'
+        tags_text = ' '.join(self.tags) if self.tags else ''
+        return f'{self.summary} {errors_text} {tags_text}'.strip()
+
+    def to_payload(self, filename: str, user_id: str) -> dict[str, Any]:
+        """Build Qdrant payload for this critique (type=critique)."""
+        level_estimate = _score_to_level_estimate(self.score)
+        return {
+            'type': PAYLOAD_TYPE_CRITIQUE,
+            'user_id': user_id,
+            'filename': filename,
+            'score': self.score,
+            'summary': self.summary,
+            'advice': self.constructive_advice,
+            'timestamp': self.timestamp,
+            'tags': self.tags,
+            'goals_snapshot': self.goals_snapshot or '',
+            'level_estimate': level_estimate,
+        }
 
     @classmethod
     def from_analysis_response(
         cls,
         response: AnalysisResponse,
+        *,
+        tags: list[str] | None = None,
+        goals_snapshot: str | None = None,
     ) -> 'ArtCritique':
         """Create ArtCritique from AnalysisResponse.
 
         Args:
             response: AnalysisResponse from Gemini
+            tags: Optional tags for the critique
+            goals_snapshot: Optional user goals snapshot
 
         Returns:
             ArtCritique: Initialized critique object
@@ -67,7 +122,53 @@ class ArtCritique:
             score=response.score,
             technical_errors=response.technical_errors,
             constructive_advice=response.constructive_advice,
+            tags=tags,
+            goals_snapshot=goals_snapshot,
         )
+
+
+class PortfolioRecord:
+    """Data model for a portfolio item (uploaded artwork without critique)."""
+
+    def __init__(
+        self,
+        filename: str,
+        user_id: str,
+        *,
+        tags: list[str] | None = None,
+        description: str | None = None,
+    ) -> None:
+        """Initialize a PortfolioRecord.
+
+        Args:
+            filename: Name of the uploaded file
+            user_id: Owner user id
+            tags: Optional tags (style, medium, subject, etc.)
+            description: Optional text description for embedding
+        """
+        self.filename = filename
+        self.user_id = user_id
+        self.tags = tags or []
+        self.description = description or ''
+        self.timestamp = datetime.now(tz=UTC).isoformat()
+
+    def get_text_for_embedding(self) -> str:
+        """Text used to generate embedding (description + tags)."""
+        desc = self.description.strip()
+        tags_text = ' '.join(self.tags) if self.tags else ''
+        return f'{desc} {tags_text}'.strip() or self.filename
+
+    def to_payload(self) -> dict[str, Any]:
+        """Build Qdrant payload for this portfolio item (type=portfolio_item)."""
+        return {
+            'type': PAYLOAD_TYPE_PORTFOLIO_ITEM,
+            'user_id': self.user_id,
+            'filename': self.filename,
+            'tags': self.tags,
+            'description': self.description,
+            'timestamp': self.timestamp,
+            'level_estimate': None,  # No score until critiqued
+        }
 
 
 class VectorService:
@@ -216,19 +317,9 @@ class VectorService:
             embeddings_list = list(embeddings_generator)
             embedding_vector = embeddings_list[0].tolist()
 
-            # Create point for Qdrant
-            point_id = hash(filename) % (10**8)  # Generate consistent ID from filename
+            point_id = str(uuid4())
+            payload = critique.to_payload(filename=filename, user_id=user_id)
 
-            payload = {
-                'filename': filename,
-                'score': critique.score,
-                'summary': critique.summary,
-                'advice': critique.constructive_advice,
-                'timestamp': critique.timestamp,
-                'user_id': user_id,
-            }
-
-            # Upsert point to Qdrant
             self.client.upsert(
                 collection_name=self.COLLECTION_NAME,
                 points=[
@@ -246,8 +337,6 @@ class VectorService:
                 point_id,
                 user_id,
             )
-            return str(point_id)
-
         except TypeError:
             self.logger.exception('Validation error saving critique')
             raise
@@ -261,6 +350,8 @@ class VectorService:
             self.logger.exception('Unexpected error saving critique for %s', filename)
             msg = f'Unexpected error in save_critique: {e!s}'
             raise RuntimeError(msg) from e
+        else:
+            return point_id
 
     def search_similar_critiques(
         self,
@@ -285,22 +376,26 @@ class VectorService:
             # Generate embedding for query
             query_embedding = next(iter(self.embedding_model.embed(query_text))).tolist()
 
-            # Search in Qdrant
+            # Search only critique points (exclude portfolio_item) for RAG context
+            query_filter = models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key='user_id',
+                        match=models.MatchValue(value=user_id),
+                    ),
+                    models.FieldCondition(
+                        key='type',
+                        match=models.MatchValue(value=PAYLOAD_TYPE_CRITIQUE),
+                    ),
+                ]
+            )
             response = self.client.query_points(
                 collection_name=self.COLLECTION_NAME,
                 query=query_embedding,
                 limit=limit,
-                query_filter=models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key='user_id',
-                            match=models.MatchValue(value=user_id),
-                        )
-                    ]
-                ),
+                query_filter=query_filter,
             )
 
-            # Format results
             results = [
                 {
                     'similarity_score': point.score,
@@ -322,6 +417,163 @@ class VectorService:
             raise RuntimeError(msg) from e
         else:
             return results
+
+    def save_portfolio_items(
+        self,
+        user_id: str,
+        items: list[PortfolioRecord],
+    ) -> list[str]:
+        """Save multiple portfolio items to the vector database (bulk upsert).
+
+        Each item gets a unique point ID (uuid4). Embeddings are generated from
+        description + tags (or filename if no description).
+
+        Args:
+            user_id: Owner user id
+            items: List of PortfolioRecord instances
+
+        Returns:
+            List of point IDs (uuid strings) in the same order as items
+
+        Raises:
+            RuntimeError: If Qdrant operations fail
+        """
+        if not items:
+            return []
+
+        point_ids: list[str] = []
+        points_batch: list[PointStruct] = []
+
+        for item in items:
+            point_id = str(uuid4())
+            point_ids.append(point_id)
+            text = item.get_text_for_embedding()
+            embeddings_list = list(self.embedding_model.embed(text))
+            embedding_vector = embeddings_list[0].tolist()
+            payload = item.to_payload()
+            points_batch.append(
+                PointStruct(id=point_id, vector=embedding_vector, payload=payload)
+            )
+
+        try:
+            self.client.upsert(
+                collection_name=self.COLLECTION_NAME,
+                points=points_batch,
+            )
+            self.logger.info(
+                'Saved %d portfolio items to Qdrant for user_id=%s',
+                len(points_batch),
+                user_id,
+            )
+        except (ResponseHandlingException, UnexpectedResponse) as e:
+            self.logger.exception('Qdrant error saving portfolio items for user_id=%s', user_id)
+            msg = f'Failed to save portfolio items: {e!s}'
+            raise RuntimeError(msg) from e
+
+        return point_ids
+
+    def search_user_history(
+        self,
+        user_id: str,
+        limit: int = 100,
+        type_filter: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Retrieve user's history (critiques and/or portfolio items) for dashboard.
+
+        Points are scrolled with user_id filter, optionally filtered by payload type.
+        Results are ordered by recency (newest first) based on timestamp in payload.
+
+        Args:
+            user_id: User to fetch history for
+            limit: Maximum number of points to return
+            type_filter: Optional 'critique' or 'portfolio_item' to filter by type
+
+        Returns:
+            List of dicts with id, type, filename, timestamp, score (if critique),
+            level_estimate, tags, and other payload fields
+
+        Raises:
+            RuntimeError: If scroll fails
+        """
+        must = [
+            models.FieldCondition(
+                key='user_id',
+                match=models.MatchValue(value=user_id),
+            ),
+        ]
+        if type_filter is not None:
+            must.append(
+                models.FieldCondition(
+                    key='type',
+                    match=models.MatchValue(value=type_filter),
+                )
+            )
+        scroll_filter = models.Filter(must=must)
+
+        try:
+            records, _ = self.client.scroll(
+                collection_name=self.COLLECTION_NAME,
+                scroll_filter=scroll_filter,
+                limit=limit,
+                with_payload=True,
+                with_vectors=False,
+            )
+
+            results: list[dict[str, Any]] = []
+            for point in records:
+                payload = point.payload or {}
+                payload['id'] = str(point.id) if point.id is not None else None
+                # Normalise type for backward compat (old points may lack type)
+                payload['type'] = payload.get('type') or PAYLOAD_TYPE_CRITIQUE
+                results.append(payload)
+
+            # Sort by timestamp descending (newest first)
+            results.sort(
+                key=lambda r: r.get('timestamp') or '',
+                reverse=True,
+            )
+            if limit > 0:
+                results = results[:limit]
+
+            self.logger.debug('Retrieved %d history records for user_id=%s', len(results), user_id)
+        except (ResponseHandlingException, UnexpectedResponse) as e:
+            self.logger.exception('Error scrolling user history for user_id=%s', user_id)
+            msg = f'Failed to retrieve user history: {e!s}'
+            raise RuntimeError(msg) from e
+        else:
+            return results
+
+    def get_point_by_id(self, point_id: str) -> dict[str, Any] | None:
+        """Retrieve a single point by ID (for GET /portfolio/item/{id}).
+
+        Args:
+            point_id: Qdrant point ID (string or numeric string)
+
+        Returns:
+            Payload dict with id added, or None if not found
+        """
+        try:
+            # Qdrant accepts int or str; keep as string for UUIDs
+            try:
+                id_val: int | str = int(point_id) if point_id.isdigit() else point_id
+            except ValueError:
+                id_val = point_id
+            result = self.client.retrieve(
+                collection_name=self.COLLECTION_NAME,
+                ids=[id_val],
+                with_payload=True,
+                with_vectors=False,
+            )
+        except (ResponseHandlingException, UnexpectedResponse):
+            return None
+        else:
+            if not result:
+                return None
+            point = result[0]
+            payload = dict(point.payload or {})
+            payload['id'] = str(point.id)
+            payload['type'] = payload.get('type') or PAYLOAD_TYPE_CRITIQUE
+            return payload
 
     def health_check(self) -> bool:
         """Check if Qdrant connection is healthy.

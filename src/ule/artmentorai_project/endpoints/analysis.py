@@ -7,7 +7,6 @@ This module provides REST endpoints for:
 - Error handling that doesn't break the API if vector DB is down
 """
 
-from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
@@ -16,24 +15,11 @@ from ..config import AppConfig
 from ..models import AnalysisResponse, UserProfile
 from ..services import AgentService, ProfileService
 from ..services.vector_service import ArtCritique, VectorService
-
-_MIME_ALIASES: dict[str, str] = {
-    'image/jpg': 'image/jpeg',
-    'image/jpe': 'image/jpeg',
-    'image/tif': 'image/tiff',
-}
-
-
-def _normalise_mime_type(mime: str) -> str:
-    """Canonicalise non-standard MIME aliases to their registered IANA values.
-
-    Args:
-        mime: Raw MIME type string reported by the client.
-
-    Returns:
-        The canonical MIME type string (lowercased, alias-resolved).
-    """
-    return _MIME_ALIASES.get(mime.lower(), mime.lower())
+from ..utils.upload_validation import (
+    validate_file_size,
+    validate_image_content_type,
+    validate_image_file,
+)
 
 
 def get_agent_service(config: AppConfig) -> AgentService:
@@ -75,98 +61,6 @@ def _format_profile_for_prompt(profile: UserProfile) -> str:
         parts.append('Experience level: ' + profile.experience_level)
 
     return ' | '.join(parts)
-
-
-def _validate_image_content_type(content_type: str | None) -> str:
-    """Enforce that the uploaded file is an image.
-
-    Uses a prefix check on the MIME type so that any ``image/*`` variant
-    (jpeg, png, webp, gif, …) is accepted without maintaining an allowlist,
-    while still rejecting everything else.
-
-    Args:
-        content_type: The ``content_type`` reported by the browser / client.
-
-    Returns:
-        The validated, normalised MIME type string.
-
-    Raises:
-        HTTPException 415: If the content type is absent or not an image.
-    """
-    mime = _normalise_mime_type(content_type or '')
-    if not mime.startswith('image/'):
-        raise HTTPException(
-            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail='Unsupported media type. Only images are allowed.',
-        )
-    return mime
-
-
-def _validate_image_file(
-    filename: str,
-    content_type: str | None,
-    config: AppConfig,
-) -> tuple[str, str]:
-    """
-    Validate that file is a valid image.
-
-    Args:
-        filename: Name of the uploaded file
-        content_type: MIME type of the file
-        config: Application configuration
-
-    Returns:
-        tuple: (file_extension, mime_type)
-
-    Raises:
-        HTTPException: If file is not valid
-    """
-    file_extension = Path(filename).suffix.lower()
-    actual_mime = content_type or 'image/jpeg'
-
-    if file_extension not in config.upload.allowed_extensions:
-        allowed = ', '.join(config.upload.allowed_extensions)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f'Extension not allowed. Use: {allowed}',
-        )
-
-    if actual_mime not in config.upload.allowed_mime_types:
-        allowed = ', '.join(config.upload.allowed_mime_types)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f'MIME type not allowed. Use: {allowed}',
-        )
-
-    return file_extension, actual_mime
-
-
-def _validate_file_size(
-    content: bytes,
-    max_file_size_mb: int,
-) -> None:
-    """
-    Validate that file size is within limits.
-
-    Args:
-        content: File content bytes
-        max_file_size_mb: Maximum allowed file size in MB
-
-    Raises:
-        HTTPException: If file is too large or empty
-    """
-    max_size = max_file_size_mb * 1024 * 1024
-    if len(content) > max_size:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f'File too large (max {max_file_size_mb}MB)',
-        )
-
-    if len(content) == 0:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail='File is empty',
-        )
 
 
 def _require_at_least_one_input(
@@ -233,7 +127,7 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
         description="""Send an image and optional comments for structured feedback with score
         and recommendations""",
     )
-    async def critique_artwork(
+    async def critique_artwork(  # noqa: C901, PLR0912, PLR0915
         user_id: Annotated[
             str,
             Form(description='Mandatory user identifier for the RAG system.'),
@@ -296,13 +190,13 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
             mime_type: str | None = None
 
             if file is not None:
-                mime_type = _validate_image_content_type(file.content_type)
+                mime_type = validate_image_content_type(file.content_type)
 
                 image_bytes = await file.read()
 
-                _validate_file_size(image_bytes, config.upload.max_file_size_mb)
+                validate_file_size(image_bytes, config.upload.max_file_size_mb)
 
-                _extension, mime_type = _validate_image_file(
+                _extension, mime_type = validate_image_file(
                     filename=file.filename or 'unknown',
                     content_type=mime_type,
                     config=config,
@@ -400,9 +294,11 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                     if isinstance(result, dict):
                         result = AnalysisResponse(**result)
 
-                    critique = ArtCritique.from_analysis_response(result)
-                    # Save to Qdrant with filename as identifier
                     artwork_filename = (file.filename if file is not None else None) or 'unknown'
+                    critique = ArtCritique.from_analysis_response(
+                        result,
+                        goals_snapshot=profile_context_str,
+                    )
                     vector_service.save_critique(critique, artwork_filename, user_id=user_id)
 
                     config.logger.info(
