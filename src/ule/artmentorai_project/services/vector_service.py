@@ -376,7 +376,7 @@ class VectorService:
             # Generate embedding for query
             query_embedding = next(iter(self.embedding_model.embed(query_text))).tolist()
 
-            # Search only critique points (exclude portfolio_item) for RAG context
+            # Search only critique points and exclude portfolio_item for RAG context
             query_filter = models.Filter(
                 must=[
                     models.FieldCondition(
@@ -451,9 +451,7 @@ class VectorService:
             embeddings_list = list(self.embedding_model.embed(text))
             embedding_vector = embeddings_list[0].tolist()
             payload = item.to_payload()
-            points_batch.append(
-                PointStruct(id=point_id, vector=embedding_vector, payload=payload)
-            )
+            points_batch.append(PointStruct(id=point_id, vector=embedding_vector, payload=payload))
 
         try:
             self.client.upsert(

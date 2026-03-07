@@ -140,12 +140,12 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:
         '/upload',
         summary='Upload portfolio images',
         description=(
-            'Upload one or more images to the user\'s portfolio. '
+            "Upload one or more images to the user's portfolio. "
             'Stored in the vector DB as portfolio_item (no auto-critique). '
             'Optional tags are applied to all uploaded files.'
         ),
     )
-    async def upload_portfolio(  # pyright: ignore[reportUnusedFunction]
+    async def upload_portfolio(
         user_id: Annotated[
             str,
             Form(description='User identifier owning the portfolio.'),
@@ -165,9 +165,7 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:
                 detail='At least one file is required.',
             )
         svc = _require_vector_service()
-        records = await _validate_and_build_records(
-            files, user_id, _parse_tags(tags), config
-        )
+        records = await _validate_and_build_records(files, user_id, _parse_tags(tags), config)
         try:
             ids = svc.save_portfolio_items(user_id=user_id, items=records)
         except RuntimeError as e:
@@ -186,7 +184,7 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:
             'for the user, newest first. Optional type filter: critique or portfolio_item.'
         ),
     )
-    async def get_history(  # pyright: ignore[reportUnusedFunction]
+    async def get_history(
         user_id: str,
         limit: Annotated[
             int,
