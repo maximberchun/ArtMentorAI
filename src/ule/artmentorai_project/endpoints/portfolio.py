@@ -6,19 +6,35 @@ This module provides REST endpoints for:
 - Retrieving a single item by ID
 """
 
+from collections.abc import Awaitable, Callable
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from ..config import AppConfig
-from ..models import PortfolioHistoryItem, PortfolioUploadResponse
+from ..models import AuthUser, PortfolioHistoryItem, PortfolioUploadResponse
 from ..services import VectorService
+from ..services.auth_service import AuthService
 from ..services.vector_service import PortfolioRecord
 from ..utils.upload_validation import (
     validate_file_size,
     validate_image_content_type,
     validate_image_file,
 )
+
+_bearer = HTTPBearer(auto_error=True)
+
+
+def _build_current_user_dependency(config: AppConfig) -> Callable[..., Awaitable[AuthUser]]:
+    auth = AuthService(config)
+
+    async def _current_user(
+        creds: Annotated[HTTPAuthorizationCredentials, Depends(_bearer)],
+    ) -> AuthUser:
+        return await auth.verify_access_token(creds.credentials)
+
+    return _current_user
 
 
 def get_vector_service(config: AppConfig) -> VectorService | None:
@@ -104,7 +120,7 @@ def _get_item_or_raise(svc: VectorService, item_id: str) -> dict:
     return item
 
 
-def create_portfolio_router(config: AppConfig) -> APIRouter:
+def create_portfolio_router(config: AppConfig) -> APIRouter:  # noqa: C901
     """
     Create router for portfolio upload and history.
 
@@ -128,6 +144,7 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:
     except Exception:
         config.logger.exception('Failed to get vector service')
         vector_service = None
+    current_user = _build_current_user_dependency(config)
 
     def _require_vector_service() -> VectorService:
         if vector_service is None:
@@ -139,7 +156,6 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:
 
     @router.post(
         '/upload',
-        response_model=PortfolioUploadResponse,
         summary='Upload portfolio images',
         description=(
             "Upload one or more images to the user's portfolio. "
@@ -148,14 +164,11 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:
         ),
     )
     async def upload_portfolio(
-        user_id: Annotated[
-            str,
-            Form(description='User identifier owning the portfolio.'),
-        ],
         files: Annotated[
             list[UploadFile],
             File(description='Image files to add to the portfolio.'),
         ],
+        user: Annotated[AuthUser, Depends(current_user)],
         tags: Annotated[
             str | None,
             Form(description='Optional comma-separated tags applied to all files.'),
@@ -167,11 +180,11 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:
                 detail='At least one file is required.',
             )
         svc = _require_vector_service()
-        records = await _validate_and_build_records(files, user_id, _parse_tags(tags), config)
+        records = await _validate_and_build_records(files, user.user_id, _parse_tags(tags), config)
         try:
-            ids = svc.save_portfolio_items(user_id=user_id, items=records)
+            ids = svc.save_portfolio_items(user_id=user.user_id, items=records)
         except RuntimeError as e:
-            config.logger.exception('Failed to save portfolio items for user_id=%s', user_id)
+            config.logger.exception('Failed to save portfolio items for user_id=%s', user.user_id)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f'Failed to save portfolio: {e!s}',
@@ -179,16 +192,15 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:
         return PortfolioUploadResponse(ids=ids)
 
     @router.get(
-        '/history/{user_id}',
-        response_model=list[PortfolioHistoryItem],
+        '/history/me',
         summary='Get user portfolio and critique history',
         description=(
             'Returns a list of stored items (critiques and portfolio items) '
-            'for the user, newest first. Optional type filter: critique or portfolio_item.'
+            'for the current user, newest first. Optional type filter: critique or portfolio_item.'
         ),
     )
     async def get_history(
-        user_id: str,
+        user: Annotated[AuthUser, Depends(current_user)],
         limit: Annotated[
             int,
             Query(description='Max number of items to return', ge=1, le=500),
@@ -199,17 +211,44 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:
         ] = None,
     ) -> list[PortfolioHistoryItem]:
         svc = _require_vector_service()
-        raw = _fetch_user_history(svc, user_id, limit, type_filter, config)
+        raw = _fetch_user_history(svc, user.user_id, limit, type_filter, config)
         return [PortfolioHistoryItem.model_validate(r) for r in raw]
 
     @router.get(
         '/item/{item_id}',
-        response_model=PortfolioHistoryItem,
         summary='Get a single portfolio or critique item by ID',
         description='Returns full details (payload) for one stored item.',
     )
-    async def get_item(item_id: str) -> PortfolioHistoryItem:  # pyright: ignore[reportUnusedFunction]
+    async def get_item(
+        item_id: str, user: Annotated[AuthUser, Depends(current_user)]
+    ) -> PortfolioHistoryItem:  # pyright: ignore[reportUnusedFunction]
         svc = _require_vector_service()
-        return PortfolioHistoryItem.model_validate(_get_item_or_raise(svc, item_id))
+        payload = _get_item_or_raise(svc, item_id)
+        if payload.get('user_id') != user.user_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Item not found')
+        return PortfolioHistoryItem.model_validate(payload)
+
+    # Backward-compatible endpoint (deprecated).
+    @router.get(
+        '/history/{user_id}',
+        summary='Get user history (deprecated)',
+        description='Deprecated. Use GET /portfolio/history/me. Only allowed for the current user.',
+        deprecated=True,
+    )
+    async def get_history_deprecated(
+        user_id: str,
+        user: Annotated[AuthUser, Depends(current_user)],
+        limit: Annotated[
+            int,
+            Query(description='Max number of items to return', ge=1, le=500),
+        ] = 100,
+        type_filter: Annotated[
+            str | None,
+            Query(description='Filter by type: critique or portfolio_item'),
+        ] = None,
+    ) -> list[PortfolioHistoryItem]:
+        if user_id != user.user_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Forbidden')
+        return await get_history(user=user, limit=limit, type_filter=type_filter)
 
     return router

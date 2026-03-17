@@ -18,6 +18,7 @@ fastembed
 
 # Utilities
 httpx
+PyJWT[crypto]
 
 # Development (optional)
 pytest

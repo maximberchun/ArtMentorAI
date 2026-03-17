@@ -13,10 +13,12 @@ infrastructure concerns (`core`).
 """
 
 from .responses import AnalysisResponse, PortfolioHistoryItem, PortfolioUploadResponse
+from .auth_user import AuthUser
 from .user_profile import UserProfile, UserProfileBase
 
 __all__ = [
     'AnalysisResponse',
+    'AuthUser',
     'PortfolioHistoryItem',
     'PortfolioUploadResponse',
     'UserProfile',

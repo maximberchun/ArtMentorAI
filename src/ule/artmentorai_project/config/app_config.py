@@ -9,6 +9,7 @@ from pydantic_settings import BaseSettings
 from .gemini_config import GeminiConfig
 from .server_config import ServerConfig
 from .ssl_config import SSLConfig
+from .supabase_config import SupabaseConfig
 from .upload_config import UploadConfig
 
 
@@ -55,6 +56,7 @@ class AppConfig(BaseSettings):
     server: ServerConfig = Field(default_factory=ServerConfig, description='Server configuration')
     ssl: SSLConfig = Field(default_factory=SSLConfig, description='SSL/TLS configuration')
     gemini: GeminiConfig = Field(..., description='Google Gemini configuration')
+    supabase: SupabaseConfig = Field(..., description='Supabase configuration (Auth/JWT)')
     upload: UploadConfig = Field(
         default_factory=UploadConfig, description='File upload configuration'
     )

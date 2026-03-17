@@ -12,12 +12,14 @@ database drivers, or framework-specific code.
 """
 
 from .agent_service import AgentService
+from .auth_service import AuthService
 from .profile_service import ProfileService
 from .vector_service import ArtCritique, PortfolioRecord, VectorService
 
 __all__ = [
     'AgentService',
     'ArtCritique',
+    'AuthService',
     'PortfolioRecord',
     'ProfileService',
     'VectorService',

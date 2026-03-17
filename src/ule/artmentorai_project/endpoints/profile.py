@@ -1,12 +1,28 @@
 """Endpoints for managing user profiles (goals and preferences)."""
 
+from collections.abc import Awaitable, Callable
 from typing import Annotated
 
-from fastapi import APIRouter, Body, HTTPException, status
+from fastapi import APIRouter, Body, Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from ..config import AppConfig
-from ..models import UserProfile, UserProfileBase
+from ..models import AuthUser, UserProfile, UserProfileBase
 from ..services import ProfileService
+from ..services.auth_service import AuthService
+
+_bearer = HTTPBearer(auto_error=True)
+
+
+def _build_current_user_dependency(config: AppConfig) -> Callable[..., Awaitable[AuthUser]]:
+    auth = AuthService(config)
+
+    async def _current_user(
+        creds: Annotated[HTTPAuthorizationCredentials, Depends(_bearer)],
+    ) -> AuthUser:
+        return await auth.verify_access_token(creds.credentials)
+
+    return _current_user
 
 
 def create_profile_router(config: AppConfig) -> APIRouter:
@@ -27,18 +43,18 @@ def create_profile_router(config: AppConfig) -> APIRouter:
     )
 
     profile_service = ProfileService(logger=config.logger)
+    current_user = _build_current_user_dependency(config)
 
     @router.get(
-        '/{user_id}',
-        response_model=UserProfile,
+        '/me',
         summary='Get user profile',
-        description='Retrieve the stored profile (goals and preferences) for a user.',
+        description='Retrieve the stored profile (goals and preferences) for the current user.',
     )
-    async def get_profile(user_id: str) -> UserProfile:
+    async def get_profile(user: Annotated[AuthUser, Depends(current_user)]) -> UserProfile:
         try:
-            profile = profile_service.get_profile(user_id)
+            profile = profile_service.get_profile(user.user_id)
         except RuntimeError as e:
-            config.logger.exception('Failed to load profile for user_id=%s', user_id)
+            config.logger.exception('Failed to load profile for user_id=%s', user.user_id)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f'Error loading profile: {e!s}',
@@ -52,36 +68,65 @@ def create_profile_router(config: AppConfig) -> APIRouter:
         return profile
 
     @router.put(
-        '/{user_id}',
-        response_model=UserProfile,
+        '/me',
         summary='Create or update user profile',
         description=(
-            'Create or update the profile for the given user, including goals, '
+            'Create or update the profile for the current user, including goals, '
             'preferred and disliked styles, favorite artists, and experience level.'
         ),
     )
     async def upsert_profile(
-        user_id: str,
         payload: Annotated[
             UserProfileBase,
             Body(
                 description=(
                     'Profile fields to set for the user. The `user_id` is taken '
-                    'from the URL path and does not need to be included here.'
+                    'from the verified access token and does not need to be included here.'
                 ),
             ),
         ],
+        user: Annotated[AuthUser, Depends(current_user)],
     ) -> UserProfile:
-        profile = UserProfile(user_id=user_id, **payload.model_dump())
+        profile = UserProfile(user_id=user.user_id, **payload.model_dump())
         try:
             saved = profile_service.upsert_profile(profile)
         except RuntimeError as e:
-            config.logger.exception('Failed to save profile for user_id=%s', user_id)
+            config.logger.exception('Failed to save profile for user_id=%s', user.user_id)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f'Error saving profile: {e!s}',
             ) from e
         return saved
+
+    # Backward-compatible endpoints (do not trust caller-provided user_id).
+    @router.get(
+        '/{user_id}',
+        summary='Get user profile (deprecated)',
+        description='Deprecated. Use GET /profile/me. Only allowed for the current user.',
+        deprecated=True,
+    )
+    async def get_profile_deprecated(
+        user_id: str,
+        user: Annotated[AuthUser, Depends(current_user)],
+    ) -> UserProfile:
+        if user_id != user.user_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Forbidden')
+        return await get_profile(user=user)
+
+    @router.put(
+        '/{user_id}',
+        summary='Create/update user profile (deprecated)',
+        description='Deprecated. Use PUT /profile/me. Only allowed for the current user.',
+        deprecated=True,
+    )
+    async def upsert_profile_deprecated(
+        user_id: str,
+        payload: Annotated[UserProfileBase, Body(description='Profile fields to set.')],
+        user: Annotated[AuthUser, Depends(current_user)],
+    ) -> UserProfile:
+        if user_id != user.user_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Forbidden')
+        return await upsert_profile(user=user, payload=payload)
 
     return router
 

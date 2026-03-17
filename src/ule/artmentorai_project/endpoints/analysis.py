@@ -7,19 +7,35 @@ This module provides REST endpoints for:
 - Error handling that doesn't break the API if vector DB is down
 """
 
+from collections.abc import Awaitable, Callable
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from ..config import AppConfig
-from ..models import AnalysisResponse, UserProfile
+from ..models import AnalysisResponse, AuthUser, UserProfile
 from ..services import AgentService, ProfileService
+from ..services.auth_service import AuthService
 from ..services.vector_service import ArtCritique, VectorService
 from ..utils.upload_validation import (
     validate_file_size,
     validate_image_content_type,
     validate_image_file,
 )
+
+_bearer = HTTPBearer(auto_error=True)
+
+
+def _build_current_user_dependency(config: AppConfig) -> Callable[..., Awaitable[AuthUser]]:
+    auth = AuthService(config)
+
+    async def _current_user(
+        creds: HTTPAuthorizationCredentials = Depends(_bearer),
+    ) -> AuthUser:
+        return await auth.verify_access_token(creds.credentials)
+
+    return _current_user
 
 
 def get_agent_service(config: AppConfig) -> AgentService:
@@ -111,6 +127,7 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
     # Initialize services
     agent_service = AgentService(config)
     profile_service = ProfileService(logger=config.logger)
+    current_user = _build_current_user_dependency(config)
     try:
         vector_service: VectorService | None = get_vector_service(config)
     except RuntimeError as init_error:
@@ -129,10 +146,7 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
         and recommendations""",
     )
     async def critique_artwork(  # noqa: C901, PLR0912, PLR0915
-        user_id: Annotated[
-            str,
-            Form(description='Mandatory user identifier for the RAG system.'),
-        ],
+        user: AuthUser = Depends(current_user),
         file: Annotated[
             UploadFile | None, File(description='The artwork image to analyse.')
         ] = None,
@@ -152,8 +166,8 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
         - **Image + text** requests (both provided) for fully contextualised
           critiques.
 
-        The ``user_id`` is mandatory so that critiques can be associated
-        with a specific artist in the vector database.
+        The authenticated user's id is derived from the Supabase access token
+        so that critiques can be associated with a specific artist in the vector database.
 
         Validation order (fail-fast):
 
@@ -170,7 +184,7 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
         Args:
             file:       Optional image file to analyse.
             user_input: Optional user comments or description of the artwork.
-            user_id:    Mandatory user identifier for the RAG pipeline.
+            user:       Authenticated user identity (from Supabase access token).
 
         Returns:
             AnalysisResponse: JSON with summary, score, technical_errors, advice.
@@ -208,7 +222,7 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                 'Analyzing input — file: %s | user_input: %s | user_id: %s',
                 file.filename if file else 'none',
                 'yes' if user_input else 'none',
-                user_id,
+                user.user_id,
             )
 
             past_critiques_str: str | None = None
@@ -224,7 +238,7 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                     )
                     past_records = vector_service.search_similar_critiques(
                         query_text=memory_query,
-                        user_id=user_id,
+                        user_id=user.user_id,
                     )
                     if past_records:
                         past_critiques_str = (
@@ -238,34 +252,34 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                         config.logger.debug(
                             'Injecting %d past critique(s) into prompt for user_id=%s',
                             len(past_records),
-                            user_id,
+                            user.user_id,
                         )
                     else:
                         config.logger.debug(
                             'No past critiques found for user_id=%s — proceeding without memory',
-                            user_id,
+                            user.user_id,
                         )
                 except (ConnectionError, TimeoutError, OSError, RuntimeError) as memory_error:
                     config.logger.warning(
                         'Memory retrieval failed for user_id=%s: %s. '
                         'Proceeding without history context.',
-                        user_id,
+                        user.user_id,
                         str(memory_error),
                     )
             else:
                 config.logger.debug(
                     'VectorService not available; proceeding without memory for user_id=%s',
-                    user_id,
+                    user.user_id,
                 )
 
             # Load optional user profile for personalised critique
             profile_context_str: str | None = None
             try:
-                profile = profile_service.get_profile(user_id)
+                profile = profile_service.get_profile(user.user_id)
             except RuntimeError as e:
                 config.logger.warning(
                     'Failed to load profile for user_id=%s: %s. Proceeding without profile.',
-                    user_id,
+                    user.user_id,
                     str(e),
                 )
             else:
@@ -273,7 +287,7 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                     profile_context_str = _format_profile_for_prompt(profile)
                     config.logger.debug(
                         'Injecting profile context into prompt for user_id=%s',
-                        user_id,
+                        user.user_id,
                     )
 
             # Analyze with Gemini AI agent
@@ -300,12 +314,16 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                         result,
                         goals_snapshot=profile_context_str,
                     )
-                    vector_service.save_critique(critique, artwork_filename, user_id=user_id)
+                    vector_service.save_critique(
+                        critique,
+                        artwork_filename,
+                        user_id=user.user_id,
+                    )
 
                     config.logger.info(
                         'Critique stored in vector database: %s (user_id=%s)',
                         artwork_filename,
-                        user_id,
+                        user.user_id,
                     )
 
                 except (ConnectionError, TimeoutError, OSError) as vector_error:
@@ -320,7 +338,7 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                 config.logger.debug(
                     'Skipping vector database storage because VectorService is unavailable '
                     '(user_id=%s)',
-                    user_id,
+                    user.user_id,
                 )
 
             # Always return the analysis even if vector DB operations failed.

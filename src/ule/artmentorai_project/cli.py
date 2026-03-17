@@ -11,7 +11,12 @@ from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
 from starlette.middleware.cors import CORSMiddleware
 
 from .config import AppConfig
-from .endpoints import create_analysis_router, create_portfolio_router, create_profile_router
+from .endpoints import (
+    create_analysis_router,
+    create_auth_router,
+    create_portfolio_router,
+    create_profile_router,
+)
 from .exceptions import UserExceptionError
 from .utils import configure_ssl
 
@@ -40,9 +45,13 @@ def create_app(config: AppConfig) -> FastAPI:
     # ============== Include Routers ==============
     config.logger.info('Registering endpoints')
 
-    # Analysis endpoint (includes critique and health checks)
+    # Analysis endpoint (critique and health checks)
     analysis_router = create_analysis_router(config)
     app.include_router(analysis_router)
+
+    # Auth endpoint (Supabase JWT identity helpers)
+    auth_router = create_auth_router(config)
+    app.include_router(auth_router)
 
     # Profile endpoint (user goals and preferences)
     profile_router = create_profile_router(config)
@@ -92,10 +101,11 @@ def create_app(config: AppConfig) -> FastAPI:
                 'critique': 'POST /analysis/critique',
                 'analysis_health': 'GET /analysis/health',
                 'vector_db_health': 'GET /analysis/vector-db-health',
-                'get_profile': 'GET /profile/{user_id}',
-                'upsert_profile': 'PUT /profile/{user_id}',
+                'auth_me': 'GET /auth/me',
+                'get_profile': 'GET /profile/me',
+                'upsert_profile': 'PUT /profile/me',
                 'portfolio_upload': 'POST /portfolio/upload',
-                'portfolio_history': 'GET /portfolio/history/{user_id}',
+                'portfolio_history': 'GET /portfolio/history/me',
                 'portfolio_item': 'GET /portfolio/item/{item_id}',
             },
         }

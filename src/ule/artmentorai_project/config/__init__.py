@@ -16,6 +16,7 @@ from .app_config import AppConfig
 from .gemini_config import GeminiConfig
 from .server_config import ServerConfig
 from .ssl_config import SSLConfig
+from .supabase_config import SupabaseConfig
 from .upload_config import UploadConfig
 
 __all__ = [
@@ -23,5 +24,6 @@ __all__ = [
     'GeminiConfig',
     'SSLConfig',
     'ServerConfig',
+    'SupabaseConfig',
     'UploadConfig',
 ]
