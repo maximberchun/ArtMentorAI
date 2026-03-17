@@ -123,6 +123,7 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
 
     @router.post(
         '/critique',
+        response_model=AnalysisResponse,
         summary='Analyze an artwork',
         description="""Send an image and optional comments for structured feedback with score
         and recommendations""",

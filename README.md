@@ -13,3 +13,5 @@ A Python project
 
 
 ## 📚 Documentation
+
+- **MVP API contracts (stable)**: see `docs/api-contracts.md`

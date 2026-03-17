@@ -11,6 +11,7 @@ from typing import Annotated
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, status
 
 from ..config import AppConfig
+from ..models import PortfolioHistoryItem, PortfolioUploadResponse
 from ..services import VectorService
 from ..services.vector_service import PortfolioRecord
 from ..utils.upload_validation import (
@@ -138,6 +139,7 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:
 
     @router.post(
         '/upload',
+        response_model=PortfolioUploadResponse,
         summary='Upload portfolio images',
         description=(
             "Upload one or more images to the user's portfolio. "
@@ -158,7 +160,7 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:
             str | None,
             Form(description='Optional comma-separated tags applied to all files.'),
         ] = None,
-    ) -> dict[str, list[str]]:
+    ) -> PortfolioUploadResponse:
         if not files:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -174,10 +176,11 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f'Failed to save portfolio: {e!s}',
             ) from e
-        return {'ids': ids}
+        return PortfolioUploadResponse(ids=ids)
 
     @router.get(
         '/history/{user_id}',
+        response_model=list[PortfolioHistoryItem],
         summary='Get user portfolio and critique history',
         description=(
             'Returns a list of stored items (critiques and portfolio items) '
@@ -194,17 +197,19 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:
             str | None,
             Query(description='Filter by type: critique or portfolio_item'),
         ] = None,
-    ) -> list[dict]:
+    ) -> list[PortfolioHistoryItem]:
         svc = _require_vector_service()
-        return _fetch_user_history(svc, user_id, limit, type_filter, config)
+        raw = _fetch_user_history(svc, user_id, limit, type_filter, config)
+        return [PortfolioHistoryItem.model_validate(r) for r in raw]
 
     @router.get(
         '/item/{item_id}',
+        response_model=PortfolioHistoryItem,
         summary='Get a single portfolio or critique item by ID',
         description='Returns full details (payload) for one stored item.',
     )
-    async def get_item(item_id: str) -> dict:  # pyright: ignore[reportUnusedFunction]
+    async def get_item(item_id: str) -> PortfolioHistoryItem:  # pyright: ignore[reportUnusedFunction]
         svc = _require_vector_service()
-        return _get_item_or_raise(svc, item_id)
+        return PortfolioHistoryItem.model_validate(_get_item_or_raise(svc, item_id))
 
     return router

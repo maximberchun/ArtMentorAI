@@ -12,12 +12,13 @@ on data representation, separate from business logic (`services`) and
 infrastructure concerns (`core`).
 """
 
-from .responses import AnalysisResponse
-from .responses.analysis_response import AnalysisResponse
+from .responses import AnalysisResponse, PortfolioHistoryItem, PortfolioUploadResponse
 from .user_profile import UserProfile, UserProfileBase
 
 __all__ = [
     'AnalysisResponse',
+    'PortfolioHistoryItem',
+    'PortfolioUploadResponse',
     'UserProfile',
     'UserProfileBase',
 ]
