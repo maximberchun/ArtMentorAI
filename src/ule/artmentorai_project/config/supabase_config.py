@@ -11,12 +11,32 @@ from pydantic_settings import BaseSettings
 class SupabaseConfig(BaseSettings):
     """Configuration for Supabase integration."""
 
-    url: str = Field(..., description='Supabase project URL (e.g. https://<ref>.supabase.co)')
+    url: str = Field(..., description='Supabase project URL')
+
+    anon_key: str = Field(
+        default='',
+        description='Supabase anon/public key safe to expose to client',
+    )
+
+    service_role_key: str = Field(
+        default='',
+        description='Supabase service role key SERVER ONLY NEVER EXPOSED',
+    )
+
+    google_oauth_client_id: str = Field(
+        default='',
+        description='Google OAuth client ID for Supabase used in OAuth callback',
+    )
+
+    google_oauth_client_secret: str = Field(
+        default='',
+        description='Google OAuth client secret for Supabase used in OAuth callback',
+    )
 
     # If omitted derived from 'url' as: {url}/auth/v1/.well-known/jwks.json
     jwks_url: str | None = Field(
         default=None,
-        description='JWKS URL used to verify Supabase JWTs (optional override)',
+        description='JWKS URL used to verify Supabase JWTs (optional)',
     )
 
     jwt_aud: str = Field(
@@ -27,7 +47,7 @@ class SupabaseConfig(BaseSettings):
     # If omitted derived as '{url}/auth/v1'
     jwt_iss: str | None = Field(
         default=None,
-        description='Expected JWT issuer (optional override)',
+        description='Expected JWT issuer (optional)',
     )
 
     def resolved_jwks_url(self) -> str:
@@ -40,4 +60,8 @@ class SupabaseConfig(BaseSettings):
         """Return expected issuer string for Supabase access tokens."""
         if self.jwt_iss:
             return self.jwt_iss
+        return f'{self.url.rstrip("/")}/auth/v1'
+
+    def resolved_auth_url(self) -> str:
+        """Return the Supabase Auth URL for OAuth operations."""
         return f'{self.url.rstrip("/")}/auth/v1'

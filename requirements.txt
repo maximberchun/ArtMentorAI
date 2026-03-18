@@ -19,6 +19,7 @@ fastembed
 # Utilities
 httpx
 PyJWT[crypto]
+supabase
 
 # Development (optional)
 pytest
