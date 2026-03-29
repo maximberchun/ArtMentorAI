@@ -6,6 +6,7 @@ and portfolio items in a single collection, distinguished by payload ``type``.
 """
 
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -137,6 +138,7 @@ class PortfolioRecord:
         *,
         tags: list[str] | None = None,
         description: str | None = None,
+        image_path: str | None = None,
     ) -> None:
         """Initialize a PortfolioRecord.
 
@@ -145,11 +147,13 @@ class PortfolioRecord:
             user_id: Owner user id
             tags: Optional tags (style, medium, subject, etc.)
             description: Optional text description for embedding
+            image_path: Optional Supabase Storage object path
         """
         self.filename = filename
         self.user_id = user_id
         self.tags = tags or []
         self.description = description or ''
+        self.image_path = image_path
         self.timestamp = datetime.now(tz=UTC).isoformat()
 
     def get_text_for_embedding(self) -> str:
@@ -166,6 +170,7 @@ class PortfolioRecord:
             'filename': self.filename,
             'tags': self.tags,
             'description': self.description,
+            'image_path': self.image_path,
             'timestamp': self.timestamp,
             'level_estimate': None,  # No score until critiqued
         }
@@ -286,6 +291,7 @@ class VectorService:
         critique: ArtCritique,
         filename: str,
         user_id: str,
+        image_path: str | None = None,
     ) -> str | None:
         """Save artwork critique to vector database.
 
@@ -298,6 +304,7 @@ class VectorService:
             critique: ArtCritique object with analysis data
             filename: Name/ID of the artwork file
             user_id: Unique identifier for the user who owns the critique
+            image_path: Optional Supabase Storage object path for the source image
         Returns:
             Optional[str]: Point ID if successful, None if failed
 
@@ -319,6 +326,7 @@ class VectorService:
 
             point_id = str(uuid4())
             payload = critique.to_payload(filename=filename, user_id=user_id)
+            payload['image_path'] = image_path
 
             self.client.upsert(
                 collection_name=self.COLLECTION_NAME,
@@ -475,6 +483,7 @@ class VectorService:
         user_id: str,
         limit: int = 100,
         type_filter: str | None = None,
+        signed_url_resolver: Callable[[str], str | None] | None = None,
     ) -> list[dict[str, Any]]:
         """Retrieve user's history (critiques and/or portfolio items) for dashboard.
 
@@ -485,6 +494,7 @@ class VectorService:
             user_id: User to fetch history for
             limit: Maximum number of points to return
             type_filter: Optional 'critique' or 'portfolio_item' to filter by type
+            signed_url_resolver: Optional callback to map image paths to signed URLs
 
         Returns:
             List of dicts with id, type, filename, timestamp, score (if critique),
@@ -523,6 +533,9 @@ class VectorService:
                 payload['id'] = str(point.id) if point.id is not None else None
                 # Normalise type for backward compat (old points may lack type)
                 payload['type'] = payload.get('type') or PAYLOAD_TYPE_CRITIQUE
+                image_path = payload.get('image_path')
+                if signed_url_resolver is not None and isinstance(image_path, str) and image_path:
+                    payload['image_url'] = signed_url_resolver(image_path)
                 results.append(payload)
 
             # Sort by timestamp descending (newest first)
@@ -541,11 +554,16 @@ class VectorService:
         else:
             return results
 
-    def get_point_by_id(self, point_id: str) -> dict[str, Any] | None:
+    def get_point_by_id(
+        self,
+        point_id: str,
+        signed_url_resolver: Callable[[str], str | None] | None = None,
+    ) -> dict[str, Any] | None:
         """Retrieve a single point by ID (for GET /portfolio/item/{id}).
 
         Args:
             point_id: Qdrant point ID (string or numeric string)
+            signed_url_resolver: Optional callback to map image paths to signed URLs
 
         Returns:
             Payload dict with id added, or None if not found
@@ -571,6 +589,9 @@ class VectorService:
             payload = dict(point.payload or {})
             payload['id'] = str(point.id)
             payload['type'] = payload.get('type') or PAYLOAD_TYPE_CRITIQUE
+            image_path = payload.get('image_path')
+            if signed_url_resolver is not None and isinstance(image_path, str) and image_path:
+                payload['image_url'] = signed_url_resolver(image_path)
             return payload
 
     def health_check(self) -> bool:

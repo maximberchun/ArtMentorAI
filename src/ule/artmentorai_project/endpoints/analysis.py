@@ -15,7 +15,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from ..config import AppConfig
 from ..models import AnalysisResponse, AuthUser, UserProfile
-from ..services import AgentService, ProfileService
+from ..services import AgentService, ProfileService, StorageService
 from ..services.auth_service import AuthService
 from ..services.vector_service import ArtCritique, VectorService
 from ..utils.upload_validation import (
@@ -31,7 +31,7 @@ def _build_current_user_dependency(config: AppConfig) -> Callable[..., Awaitable
     auth = AuthService(config)
 
     async def _current_user(
-        creds: HTTPAuthorizationCredentials = Depends(_bearer),
+        creds: Annotated[HTTPAuthorizationCredentials, Depends(_bearer)],
     ) -> AuthUser:
         return await auth.verify_access_token(creds.credentials)
 
@@ -59,6 +59,11 @@ def get_vector_service(config: AppConfig) -> VectorService:
         port=6333,
         logger=config.logger,
     )
+
+
+def get_storage_service(config: AppConfig) -> StorageService:
+    """Dependency injection for StorageService."""
+    return StorageService(config)
 
 
 def _format_profile_for_prompt(profile: UserProfile) -> str:
@@ -137,16 +142,24 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
             str(init_error),
         )
         vector_service = None
+    try:
+        storage_service: StorageService | None = get_storage_service(config)
+    except RuntimeError as init_error:
+        config.logger.warning(
+            'StorageService unavailable at startup: %s. '
+            'Continuing without image persistence.',
+            str(init_error),
+        )
+        storage_service = None
 
     @router.post(
         '/critique',
-        response_model=AnalysisResponse,
         summary='Analyze an artwork',
         description="""Send an image and optional comments for structured feedback with score
         and recommendations""",
     )
     async def critique_artwork(  # noqa: C901, PLR0912, PLR0915
-        user: AuthUser = Depends(current_user),
+        user: Annotated[AuthUser, Depends(current_user)],
         file: Annotated[
             UploadFile | None, File(description='The artwork image to analyse.')
         ] = None,
@@ -203,6 +216,7 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
             # File validation
             image_bytes: bytes | None = None
             mime_type: str | None = None
+            image_path: str | None = None
 
             if file is not None:
                 mime_type = validate_image_content_type(file.content_type)
@@ -216,6 +230,21 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                     content_type=mime_type,
                     config=config,
                 )
+                if storage_service is not None and image_bytes is not None:
+                    try:
+                        image_path = storage_service.upload_image(
+                            user_id=user.user_id,
+                            image_bytes=image_bytes,
+                            filename=file.filename or 'unknown',
+                            mime_type=mime_type,
+                        )
+                    except RuntimeError as storage_error:
+                        config.logger.warning(
+                            'Image upload failed for user_id=%s: %s. '
+                            'Continuing without persisted image reference.',
+                            user.user_id,
+                            str(storage_error),
+                        )
 
             # Log the request with context
             config.logger.info(
@@ -318,6 +347,7 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                         critique,
                         artwork_filename,
                         user_id=user.user_id,
+                        image_path=image_path,
                     )
 
                     config.logger.info(
@@ -326,13 +356,15 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                         user.user_id,
                     )
 
-                except (ConnectionError, TimeoutError, OSError) as vector_error:
+                except (ConnectionError, TimeoutError, OSError, RuntimeError) as vector_error:
                     # Log the error but don't fail the API
                     config.logger.warning(
                         'Failed to store critique in vector database: %s. '
                         'Continuing with analysis response.',
                         str(vector_error),
                     )
+                    if storage_service is not None and image_path is not None:
+                        storage_service.delete_file(image_path)
                     # Continue - the analysis is still returned to the user
             else:
                 config.logger.debug(

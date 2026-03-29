@@ -36,6 +36,14 @@ class PortfolioHistoryItem(BaseModel):
         None,
         description='Optional description for portfolio_item records (empty string if omitted).',
     )
+    image_path: str | None = Field(
+        None,
+        description='Supabase Storage object path for the uploaded image.',
+    )
+    image_url: str | None = Field(
+        None,
+        description='Temporary signed URL generated from image_path.',
+    )
 
     # Critique-only fields (present when type == "critique")
     score: int | None = Field(None, ge=1, le=10, description='Critique score (1-10).')

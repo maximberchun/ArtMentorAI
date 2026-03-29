@@ -14,7 +14,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from ..config import AppConfig
 from ..models import AuthUser, PortfolioHistoryItem, PortfolioUploadResponse
-from ..services import VectorService
+from ..services import StorageService, VectorService
 from ..services.auth_service import AuthService
 from ..services.vector_service import PortfolioRecord
 from ..utils.upload_validation import (
@@ -58,60 +58,69 @@ def _parse_tags(tags: str | None) -> list[str]:
     return [t.strip() for t in (tags or '').split(',') if t.strip()]
 
 
+def _require_filename(upload_file: UploadFile) -> str:
+    """Return file name or raise HTTP 400 when omitted."""
+    if not upload_file.filename:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Each file must have a filename.',
+        )
+    return upload_file.filename
+
+
 async def _validate_and_build_records(
     files: list[UploadFile],
     user_id: str,
     tag_list: list[str],
     config: AppConfig,
+    storage_service: StorageService,
 ) -> list[PortfolioRecord]:
     """Validate uploaded files and build PortfolioRecords. Raises HTTPException on error."""
     records: list[PortfolioRecord] = []
-    for f in files:
-        if not f.filename:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail='Each file must have a filename.',
-            )
-        mime = validate_image_content_type(f.content_type)
-        content = await f.read()
-        validate_file_size(content, config.upload.max_file_size_mb)
-        validate_image_file(f.filename or 'unknown', mime, config)
-        records.append(
-            PortfolioRecord(
-                filename=f.filename,
+    uploaded_paths: list[str] = []
+    try:
+        for f in files:
+            filename = _require_filename(f)
+            mime = validate_image_content_type(f.content_type)
+            content = await f.read()
+            validate_file_size(content, config.upload.max_file_size_mb)
+            validate_image_file(filename, mime, config)
+            image_path = storage_service.upload_image(
                 user_id=user_id,
-                tags=tag_list,
-                description=None,
+                image_bytes=content,
+                filename=filename,
+                mime_type=mime,
             )
-        )
+            uploaded_paths.append(image_path)
+            records.append(
+                PortfolioRecord(
+                    filename=filename,
+                    user_id=user_id,
+                    tags=tag_list,
+                    description=None,
+                    image_path=image_path,
+                )
+            )
+    except HTTPException:
+        for path in uploaded_paths:
+            storage_service.delete_file(path)
+        raise
+    except RuntimeError as e:
+        for path in uploaded_paths:
+            storage_service.delete_file(path)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f'Failed to upload image(s): {e!s}',
+        ) from e
     return records
 
 
-def _fetch_user_history(
-    svc: VectorService,
-    user_id: str,
-    limit: int,
-    type_filter: str | None,
-    config: AppConfig,
-) -> list[dict]:
-    """Call vector service and raise HTTPException on failure."""
-    try:
-        return svc.search_user_history(
-            user_id=user_id,
-            limit=limit,
-            type_filter=type_filter,
-        )
-    except RuntimeError as e:
-        config.logger.exception('Failed to get history for user_id=%s', user_id)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f'Failed to retrieve history: {e!s}',
-        ) from e
-
-
-def _get_item_or_raise(svc: VectorService, item_id: str) -> dict:
+def _get_item_or_raise(svc: VectorService, storage_service: StorageService, item_id: str) -> dict:
     """Return item by id or raise 404."""
-    item = svc.get_point_by_id(item_id)
+    item = svc.get_point_by_id(
+        item_id,
+        signed_url_resolver=storage_service.create_signed_url,
+    )
     if item is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -144,6 +153,11 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:  # noqa: C901
     except Exception:
         config.logger.exception('Failed to get vector service')
         vector_service = None
+    try:
+        storage_service = StorageService(config)
+    except RuntimeError:
+        config.logger.exception('Failed to initialize storage service')
+        storage_service = None
     current_user = _build_current_user_dependency(config)
 
     def _require_vector_service() -> VectorService:
@@ -153,6 +167,14 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:  # noqa: C901
                 detail='Portfolio storage is temporarily unavailable.',
             )
         return vector_service
+
+    def _require_storage_service() -> StorageService:
+        if storage_service is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail='Image storage is temporarily unavailable.',
+            )
+        return storage_service
 
     @router.post(
         '/upload',
@@ -180,10 +202,20 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:  # noqa: C901
                 detail='At least one file is required.',
             )
         svc = _require_vector_service()
-        records = await _validate_and_build_records(files, user.user_id, _parse_tags(tags), config)
+        storage = _require_storage_service()
+        records = await _validate_and_build_records(
+            files,
+            user.user_id,
+            _parse_tags(tags),
+            config,
+            storage,
+        )
         try:
             ids = svc.save_portfolio_items(user_id=user.user_id, items=records)
         except RuntimeError as e:
+            for record in records:
+                if record.image_path:
+                    storage.delete_file(record.image_path)
             config.logger.exception('Failed to save portfolio items for user_id=%s', user.user_id)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -211,7 +243,20 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:  # noqa: C901
         ] = None,
     ) -> list[PortfolioHistoryItem]:
         svc = _require_vector_service()
-        raw = _fetch_user_history(svc, user.user_id, limit, type_filter, config)
+        storage = _require_storage_service()
+        try:
+            raw = svc.search_user_history(
+                user_id=user.user_id,
+                limit=limit,
+                type_filter=type_filter,
+                signed_url_resolver=storage.create_signed_url,
+            )
+        except RuntimeError as e:
+            config.logger.exception('Failed to get history for user_id=%s', user.user_id)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f'Failed to retrieve history: {e!s}',
+            ) from e
         return [PortfolioHistoryItem.model_validate(r) for r in raw]
 
     @router.get(
@@ -223,7 +268,8 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:  # noqa: C901
         item_id: str, user: Annotated[AuthUser, Depends(current_user)]
     ) -> PortfolioHistoryItem:  # pyright: ignore[reportUnusedFunction]
         svc = _require_vector_service()
-        payload = _get_item_or_raise(svc, item_id)
+        storage = _require_storage_service()
+        payload = _get_item_or_raise(svc, storage, item_id)
         if payload.get('user_id') != user.user_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Item not found')
         return PortfolioHistoryItem.model_validate(payload)

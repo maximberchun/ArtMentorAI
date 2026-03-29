@@ -14,6 +14,7 @@ database drivers, or framework-specific code.
 from .agent_service import AgentService
 from .auth_service import AuthService
 from .profile_service import ProfileService
+from .storage_service import StorageService
 from .vector_service import ArtCritique, PortfolioRecord, VectorService
 
 __all__ = [
@@ -22,6 +23,7 @@ __all__ = [
     'AuthService',
     'PortfolioRecord',
     'ProfileService',
+    'StorageService',
     'VectorService',
 ]
 

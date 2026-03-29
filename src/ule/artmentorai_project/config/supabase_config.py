@@ -33,6 +33,18 @@ class SupabaseConfig(BaseSettings):
         description='Google OAuth client secret for Supabase used in OAuth callback',
     )
 
+    storage_bucket: str = Field(
+        default='artworks',
+        description='Supabase Storage bucket used for uploaded artwork files',
+    )
+
+    signed_url_ttl_seconds: int = Field(
+        default=3600,
+        ge=60,
+        le=604800,
+        description='Signed URL expiration in seconds (1 minute to 7 days)',
+    )
+
     # If omitted derived from 'url' as: {url}/auth/v1/.well-known/jwks.json
     jwks_url: str | None = Field(
         default=None,
