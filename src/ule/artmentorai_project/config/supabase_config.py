@@ -42,7 +42,7 @@ class SupabaseConfig(BaseSettings):
         default=3600,
         ge=60,
         le=604800,
-        description='Signed URL expiration in seconds (1 minute to 7 days)',
+        description='Signed URL expiration in seconds',
     )
 
     # If omitted derived from 'url' as: {url}/auth/v1/.well-known/jwks.json
