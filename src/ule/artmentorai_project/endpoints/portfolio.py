@@ -1,19 +1,22 @@
 """Endpoints for portfolio upload and history.
 
 This module provides REST endpoints for:
-- Bulk upload of portfolio images (stored in Qdrant as portfolio_item)
+- Bulk upload of portfolio images (Postgres + async Qdrant sync)
 - Retrieving user history (critiques and portfolio items)
 - Retrieving a single item by ID
 """
 
-from collections.abc import Awaitable, Callable
-from typing import Annotated
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from ..config import AppConfig
+from ..db.supabase_client import create_supabase_service_client
 from ..models import AuthUser, PortfolioHistoryItem, PortfolioUploadResponse
+from ..repositories import ImageAssetRepository, PortfolioItemRepository, VectorSyncJobRepository
+from ..repositories.vector_sync_job_repository import ENTITY_PORTFOLIO_ITEM, OP_UPSERT
 from ..services import StorageService, VectorService
 from ..services.auth_service import AuthService
 from ..services.vector_service import PortfolioRecord
@@ -22,6 +25,12 @@ from ..utils.upload_validation import (
     validate_image_content_type,
     validate_image_file,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    from ..config import AppConfig
+    from ..models.db_rows import PortfolioItemRow
 
 _bearer = HTTPBearer(auto_error=True)
 
@@ -129,12 +138,12 @@ def _get_item_or_raise(svc: VectorService, storage_service: StorageService, item
     return item
 
 
-def create_portfolio_router(config: AppConfig) -> APIRouter:  # noqa: C901
+def create_portfolio_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR0915
     """
     Create router for portfolio upload and history.
 
-    Requires VectorService (Qdrant). Endpoints return 503 if the vector DB
-    is unavailable.
+    Upload persists to Postgres and enqueues Qdrant sync; history/item reads
+    require VectorService and return 503 if Qdrant is unavailable.
     """
     router = APIRouter(
         prefix='/portfolio',
@@ -181,11 +190,11 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:  # noqa: C901
         summary='Upload portfolio images',
         description=(
             "Upload one or more images to the user's portfolio. "
-            'Stored in the vector DB as portfolio_item (no auto-critique). '
+            'Persisted in Postgres and indexed to Qdrant asynchronously (no auto-critique). '
             'Optional tags are applied to all uploaded files.'
         ),
     )
-    async def upload_portfolio(
+    async def upload_portfolio(  # noqa: C901
         files: Annotated[
             list[UploadFile],
             File(description='Image files to add to the portfolio.'),
@@ -195,13 +204,12 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:  # noqa: C901
             str | None,
             Form(description='Optional comma-separated tags applied to all files.'),
         ] = None,
-    ) -> PortfolioUploadResponse:
+    ) -> PortfolioUploadResponse:  # pyright: ignore[reportUnusedFunction]
         if not files:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail='At least one file is required.',
             )
-        svc = _require_vector_service()
         storage = _require_storage_service()
         records = await _validate_and_build_records(
             files,
@@ -211,17 +219,60 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:  # noqa: C901
             storage,
         )
         try:
-            ids = svc.save_portfolio_items(user_id=user.user_id, items=records)
+            sb = create_supabase_service_client(config)
         except RuntimeError as e:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f'Database is not configured or unavailable: {e!s}',
+            ) from e
+
+        image_repo = ImageAssetRepository(sb, config.logger)
+        portfolio_repo = PortfolioItemRepository(sb, config.logger)
+        sync_repo = VectorSyncJobRepository(sb, config.logger)
+
+        created_rows: list[PortfolioItemRow] = []
+
+        def _missing_storage_path() -> None:
+            msg = 'Missing storage path after upload.'
+            raise RuntimeError(msg)
+
+        try:
             for record in records:
-                if record.image_path:
-                    storage.delete_file(record.image_path)
-            config.logger.exception('Failed to save portfolio items for user_id=%s', user.user_id)
+                if not record.image_path:
+                    _missing_storage_path()
+                asset = image_repo.create(
+                    user_id=user.user_id,
+                    storage_bucket=config.supabase.storage_bucket,
+                    storage_object_path=record.image_path,
+                    mime_type=None,
+                    original_filename=record.filename,
+                    byte_size=None,
+                )
+                row = portfolio_repo.create(
+                    user_id=user.user_id,
+                    image_asset_id=asset.id,
+                    filename=record.filename,
+                    tags=record.tags,
+                    description=record.description,
+                )
+                sync_repo.enqueue(ENTITY_PORTFOLIO_ITEM, row.id, OP_UPSERT)
+                created_rows.append(row)
+        except HTTPException:
+            raise
+        except Exception as e:
+            for row in reversed(created_rows):
+                portfolio_repo.soft_delete(row.id, row.user_id)
+                image_repo.soft_delete(row.image_asset_id, row.user_id)
+            for rec in records:
+                if rec.image_path:
+                    storage.delete_file(rec.image_path)
+            config.logger.exception('Failed to persist portfolio for user_id=%s', user.user_id)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f'Failed to save portfolio: {e!s}',
             ) from e
-        return PortfolioUploadResponse(ids=ids)
+
+        return PortfolioUploadResponse(ids=[r.id for r in created_rows])
 
     @router.get(
         '/history/me',

@@ -14,7 +14,10 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from ..config import AppConfig
+from ..db.supabase_client import create_supabase_service_client
 from ..models import AnalysisResponse, AuthUser, UserProfile
+from ..repositories import CritiqueRepository, ImageAssetRepository, VectorSyncJobRepository
+from ..repositories.vector_sync_job_repository import ENTITY_CRITIQUE, OP_UPSERT
 from ..services import AgentService, ProfileService, StorageService
 from ..services.auth_service import AuthService
 from ..services.vector_service import ArtCritique, VectorService
@@ -146,8 +149,7 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
         storage_service: StorageService | None = get_storage_service(config)
     except RuntimeError as init_error:
         config.logger.warning(
-            'StorageService unavailable at startup: %s. '
-            'Continuing without image persistence.',
+            'StorageService unavailable at startup: %s. Continuing without image persistence.',
             str(init_error),
         )
         storage_service = None
@@ -328,19 +330,60 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                 profile_context=profile_context_str,
             )
 
-            # ============== RAG: Store critique in vector database ==============
-            # This is wrapped in try/except so the API doesn't fail if DB is down
-            if vector_service is not None:
+            # Persist critique - Postgres + async Qdrant sync
+            analysis_result = AnalysisResponse(**result) if isinstance(result, dict) else result
+
+            synced_via_pg = False
+            try:
+                sb = create_supabase_service_client(config)
+                image_asset_id = None
+                if image_path is not None:
+                    img_repo = ImageAssetRepository(sb, config.logger)
+                    asset = img_repo.create(
+                        user_id=user.user_id,
+                        storage_bucket=config.supabase.storage_bucket,
+                        storage_object_path=image_path,
+                        mime_type=mime_type,
+                        original_filename=file.filename if file is not None else None,
+                        byte_size=len(image_bytes) if image_bytes else None,
+                    )
+                    image_asset_id = asset.id
+                cr_repo = CritiqueRepository(sb, config.logger)
+                artwork_filename = (file.filename if file is not None else None) or 'unknown'
+                row = cr_repo.create(
+                    user_id=user.user_id,
+                    summary=analysis_result.summary,
+                    score=analysis_result.score,
+                    technical_errors=analysis_result.technical_errors,
+                    constructive_advice=analysis_result.constructive_advice,
+                    tags=[],
+                    goals_snapshot=profile_context_str,
+                    image_asset_id=image_asset_id,
+                    artwork_filename=artwork_filename,
+                )
+                VectorSyncJobRepository(sb, config.logger).enqueue(
+                    ENTITY_CRITIQUE,
+                    row.id,
+                    OP_UPSERT,
+                )
+                synced_via_pg = True
+                config.logger.info(
+                    'Critique persisted to Postgres and queued for Qdrant: id=%s user_id=%s',
+                    row.id,
+                    user.user_id,
+                )
+            except RuntimeError as persist_error:
+                config.logger.warning(
+                    'Postgres critique persistence / enqueue failed: %s',
+                    str(persist_error),
+                )
+
+            if not synced_via_pg and vector_service is not None:
                 try:
-                    config.logger.debug('Attempting to store critique in vector database')
-
-                    # Convert analysis result to ArtCritique for vector storage
-                    if isinstance(result, dict):
-                        result = AnalysisResponse(**result)
-
+                    config.logger.debug('Fallback: store critique directly in Qdrant')
                     artwork_filename = (file.filename if file is not None else None) or 'unknown'
                     critique = ArtCritique.from_analysis_response(
-                        result,
+                        analysis_result,
                         goals_snapshot=profile_context_str,
                     )
                     vector_service.save_critique(
@@ -349,15 +392,12 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                         user_id=user.user_id,
                         image_path=image_path,
                     )
-
                     config.logger.info(
-                        'Critique stored in vector database: %s (user_id=%s)',
+                        'Critique stored in vector database (fallback): %s (user_id=%s)',
                         artwork_filename,
                         user.user_id,
                     )
-
                 except (ConnectionError, TimeoutError, OSError, RuntimeError) as vector_error:
-                    # Log the error but don't fail the API
                     config.logger.warning(
                         'Failed to store critique in vector database: %s. '
                         'Continuing with analysis response.',
@@ -365,16 +405,14 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                     )
                     if storage_service is not None and image_path is not None:
                         storage_service.delete_file(image_path)
-                    # Continue - the analysis is still returned to the user
-            else:
+            elif not synced_via_pg:
                 config.logger.debug(
-                    'Skipping vector database storage because VectorService is unavailable '
-                    '(user_id=%s)',
+                    'Skipping vector storage (no Postgres, no VectorService) user_id=%s',
                     user.user_id,
                 )
 
-            # Always return the analysis even if vector DB operations failed.
-            return result  # noqa: TRY300
+            # Always return the analysis even if vector DB operations failed
+            return analysis_result  # noqa: TRY300
 
         except HTTPException:
             raise

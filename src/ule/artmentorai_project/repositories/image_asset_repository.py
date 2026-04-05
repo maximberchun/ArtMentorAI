@@ -54,6 +54,24 @@ class ImageAssetRepository:
 
         return as_model(ImageAssetRow, single_row_dict(response.data))
 
+    def get_by_id(self, asset_id: str) -> ImageAssetRow | None:
+        """Return an image asset by primary key (any ``deleted_at``). Internal sync use."""
+        try:
+            response = (
+                self._client.table(self._table)
+                .select('*')
+                .eq('id', asset_id)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            self._logger.exception('Failed to load image_asset id=%s', asset_id)
+            msg = f'Failed to load image metadata: {exc!s}'
+            raise RuntimeError(msg) from exc
+
+        rows = as_model_list(ImageAssetRow, response.data)
+        return rows[0] if rows else None
+
     def get_active(self, asset_id: str, user_id: str) -> ImageAssetRow | None:
         """Return a non-deleted asset owned by ``user_id``."""
         try:

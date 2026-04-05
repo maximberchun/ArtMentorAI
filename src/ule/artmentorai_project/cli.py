@@ -3,6 +3,7 @@
 import argparse
 import logging
 import sys
+from contextlib import asynccontextmanager
 
 import uvicorn
 from dotenv import load_dotenv
@@ -18,6 +19,7 @@ from .endpoints import (
     create_profile_router,
 )
 from .exceptions import UserExceptionError
+from .services.vector_sync_worker import VectorSyncWorker
 from .utils import configure_ssl
 
 
@@ -33,6 +35,16 @@ def create_app(config: AppConfig) -> FastAPI:
     Returns:
         FastAPI: Configured FastAPI application instance
     """
+    vector_sync_worker = VectorSyncWorker(config)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        await vector_sync_worker.start()
+        try:
+            yield
+        finally:
+            await vector_sync_worker.stop()
+
     app = FastAPI(
         title=config.app_name,
         description='Intelligent assistant for artwork analysis and critique using AI',
@@ -40,6 +52,7 @@ def create_app(config: AppConfig) -> FastAPI:
         debug=config.debug,
         docs_url='/docs',
         redoc_url='/redoc',
+        lifespan=lifespan,
     )
 
     # ============== Include Routers ==============

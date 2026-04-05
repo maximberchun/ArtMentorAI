@@ -78,6 +78,23 @@ class PortfolioItemRow(BaseModel):
     deleted_at: datetime | None = None
 
 
+class VectorSyncJobRow(BaseModel):
+    """Row from ``public.vector_sync_jobs`` (Qdrant sync outbox)."""
+
+    model_config = ConfigDict(extra='ignore')
+
+    id: str
+    entity_kind: str
+    entity_id: str
+    operation: str
+    status: str
+    attempt_count: int = 0
+    last_error: str | None = None
+    next_attempt_at: datetime | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
 class ProgressSnapshotRow(BaseModel):
     """Row from ``public.progress_snapshots``."""
 
@@ -101,4 +118,5 @@ __all__ = [
     'PortfolioItemRow',
     'ProfileRow',
     'ProgressSnapshotRow',
+    'VectorSyncJobRow',
 ]

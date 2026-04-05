@@ -15,7 +15,7 @@ from fastembed.embedding import FlagEmbedding
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
-from qdrant_client.http.models import Distance, PointStruct, VectorParams
+from qdrant_client.http.models import Distance, PointIdsList, PointStruct, VectorParams
 
 from ..models import AnalysisResponse
 
@@ -90,6 +90,8 @@ class ArtCritique:
         return {
             'type': PAYLOAD_TYPE_CRITIQUE,
             'user_id': user_id,
+            'critique_id': None,
+            'portfolio_item_id': None,
             'filename': filename,
             'score': self.score,
             'summary': self.summary,
@@ -167,6 +169,8 @@ class PortfolioRecord:
         return {
             'type': PAYLOAD_TYPE_PORTFOLIO_ITEM,
             'user_id': self.user_id,
+            'critique_id': None,
+            'portfolio_item_id': None,
             'filename': self.filename,
             'tags': self.tags,
             'description': self.description,
@@ -360,6 +364,86 @@ class VectorService:
             raise RuntimeError(msg) from e
         else:
             return point_id
+
+    @staticmethod
+    def _normalize_point_id(point_id: str) -> int | str:
+        """Qdrant accepts int or UUID/str; normalize numeric strings to int."""
+        try:
+            return int(point_id) if point_id.isdigit() else point_id
+        except ValueError:
+            return point_id
+
+    def delete_points_by_ids(self, point_ids: list[str]) -> None:
+        """Remove points by id (idempotent if already absent)."""
+        ids: list[int | str] = []
+        for pid in point_ids:
+            if not pid:
+                continue
+            ids.append(self._normalize_point_id(pid))
+        if not ids:
+            return
+        try:
+            self.client.delete(
+                collection_name=self.COLLECTION_NAME,
+                points_selector=PointIdsList(points=ids),
+            )
+        except (ResponseHandlingException, UnexpectedResponse) as e:
+            self.logger.exception('Qdrant error deleting points')
+            msg = f'Failed to delete points from Qdrant: {e!s}'
+            raise RuntimeError(msg) from e
+
+    def upsert_critique_with_stable_id(  # noqa: PLR0913
+        self,
+        point_id: str,
+        critique: ArtCritique,
+        filename: str,
+        user_id: str,
+        image_path: str | None,
+        critique_id: str,
+    ) -> None:
+        """Upsert a critique point using a stable id (Postgres ``critiques.id``). Idempotent."""
+        self._validate_critique(critique)
+        text_for_embedding = critique.get_text_for_embedding()
+        embeddings_list = list(self.embedding_model.embed(text_for_embedding))
+        embedding_vector = embeddings_list[0].tolist()
+        payload = critique.to_payload(filename=filename, user_id=user_id)
+        payload['image_path'] = image_path
+        payload['critique_id'] = critique_id
+        payload['portfolio_item_id'] = None
+        qid = self._normalize_point_id(point_id)
+        try:
+            self.client.upsert(
+                collection_name=self.COLLECTION_NAME,
+                points=[PointStruct(id=qid, vector=embedding_vector, payload=payload)],
+            )
+        except (ResponseHandlingException, UnexpectedResponse) as e:
+            self.logger.exception('Qdrant error upserting critique id=%s', critique_id)
+            msg = f'Failed to upsert critique in Qdrant: {e!s}'
+            raise RuntimeError(msg) from e
+
+    def upsert_portfolio_with_stable_id(
+        self,
+        point_id: str,
+        record: PortfolioRecord,
+        portfolio_item_id: str,
+    ) -> None:
+        """Upsert a portfolio item using a stable id (Postgres ``portfolio_items.id``). Idempotent."""  # noqa: E501
+        text = record.get_text_for_embedding()
+        embeddings_list = list(self.embedding_model.embed(text))
+        embedding_vector = embeddings_list[0].tolist()
+        payload = record.to_payload()
+        payload['portfolio_item_id'] = portfolio_item_id
+        payload['critique_id'] = None
+        qid = self._normalize_point_id(point_id)
+        try:
+            self.client.upsert(
+                collection_name=self.COLLECTION_NAME,
+                points=[PointStruct(id=qid, vector=embedding_vector, payload=payload)],
+            )
+        except (ResponseHandlingException, UnexpectedResponse) as e:
+            self.logger.exception('Qdrant error upserting portfolio id=%s', portfolio_item_id)
+            msg = f'Failed to upsert portfolio item in Qdrant: {e!s}'
+            raise RuntimeError(msg) from e
 
     def search_similar_critiques(
         self,

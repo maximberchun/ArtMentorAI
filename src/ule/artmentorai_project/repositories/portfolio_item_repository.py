@@ -63,6 +63,24 @@ class PortfolioItemRepository:
 
         return as_model_list(PortfolioItemRow, response.data)
 
+    def get_by_id(self, item_id: str) -> PortfolioItemRow | None:
+        """Return a portfolio row by primary key (any ``deleted_at``). Internal sync use."""
+        try:
+            response = (
+                self._client.table(self._table)
+                .select('*')
+                .eq('id', item_id)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            self._logger.exception('Failed to load portfolio_item id=%s', item_id)
+            msg = f'Failed to load portfolio item: {exc!s}'
+            raise RuntimeError(msg) from exc
+
+        rows = as_model_list(PortfolioItemRow, response.data)
+        return rows[0] if rows else None
+
     def get_active(self, item_id: str, user_id: str) -> PortfolioItemRow | None:
         """Return a non-deleted portfolio row owned by ``user_id``."""
         try:

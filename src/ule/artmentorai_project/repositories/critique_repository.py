@@ -58,6 +58,24 @@ class CritiqueRepository:
 
         return as_model(CritiqueRow, single_row_dict(response.data))
 
+    def get_by_id(self, critique_id: str) -> CritiqueRow | None:
+        """Return a critique row by primary key (any ``deleted_at``). Internal sync use."""
+        try:
+            response = (
+                self._client.table(self._table)
+                .select('*')
+                .eq('id', critique_id)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            self._logger.exception('Failed to load critique id=%s', critique_id)
+            msg = f'Failed to load critique: {exc!s}'
+            raise RuntimeError(msg) from exc
+
+        rows = as_model_list(CritiqueRow, response.data)
+        return rows[0] if rows else None
+
     def get_active(self, critique_id: str, user_id: str) -> CritiqueRow | None:
         """Return a non-deleted critique owned by ``user_id``."""
         try:
