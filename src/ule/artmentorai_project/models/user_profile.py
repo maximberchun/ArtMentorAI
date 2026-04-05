@@ -26,6 +26,10 @@ class UserProfileBase(BaseModel):
         default='beginner',
         description='Self-reported level: beginner, intermediate, or advanced.',
     )
+    retain_memory: bool = Field(
+        default=True,
+        description='When false, long-term memory / indexing should not retain new data.',
+    )
 
 
 class UserProfile(UserProfileBase):
@@ -38,7 +42,7 @@ class UserProfile(UserProfileBase):
 
 
 __all__ = [
-    'UserProfileBase',
     'UserProfile',
+    'UserProfileBase',
 ]
 
