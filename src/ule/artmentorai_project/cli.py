@@ -154,6 +154,8 @@ def _setup_logger(verbose: bool) -> logging.Logger:
         format='%(asctime)s | %(levelname)s | %(message)s',
         stream=sys.stdout,
     )
+    logging.getLogger('h2').setLevel(logging.WARNING)
+    logging.getLogger('httpx').setLevel(logging.WARNING)
     return logging.getLogger(__name__)
 
 
