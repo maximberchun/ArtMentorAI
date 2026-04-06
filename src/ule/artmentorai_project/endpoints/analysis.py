@@ -57,11 +57,7 @@ def get_vector_service(config: AppConfig) -> VectorService:
     Returns:
         VectorService: Initialized vector service instance
     """
-    return VectorService(
-        host='localhost',
-        port=6333,
-        logger=config.logger,
-    )
+    return VectorService(config=config, logger=config.logger)
 
 
 def get_storage_service(config: AppConfig) -> StorageService:

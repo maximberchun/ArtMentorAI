@@ -6,13 +6,13 @@ This module provides REST endpoints for:
 - Retrieving a single item by ID
 """
 
-from __future__ import annotations
-
-from typing import TYPE_CHECKING, Annotated
+from collections.abc import Awaitable, Callable
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from ..config import AppConfig
 from ..db.supabase_client import create_supabase_service_client
 from ..models import AuthUser, PortfolioHistoryItem, PortfolioUploadResponse
 from ..repositories import ImageAssetRepository, PortfolioItemRepository, VectorSyncJobRepository
@@ -25,12 +25,6 @@ from ..utils.upload_validation import (
     validate_image_content_type,
     validate_image_file,
 )
-
-if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
-
-    from ..config import AppConfig
-    from ..models.db_rows import PortfolioItemRow
 
 _bearer = HTTPBearer(auto_error=True)
 
@@ -49,11 +43,7 @@ def _build_current_user_dependency(config: AppConfig) -> Callable[..., Awaitable
 def get_vector_service(config: AppConfig) -> VectorService | None:
     """Get VectorService; returns None if Qdrant is unavailable."""
     try:
-        return VectorService(
-            host='localhost',
-            port=6333,
-            logger=config.logger,
-        )
+        return VectorService(config=config, logger=config.logger)
     except RuntimeError as init_error:
         config.logger.warning(
             'VectorService unavailable: %s. Portfolio endpoints will fail.',
@@ -124,10 +114,16 @@ async def _validate_and_build_records(
     return records
 
 
-def _get_item_or_raise(svc: VectorService, storage_service: StorageService, item_id: str) -> dict:
+def _get_item_or_raise(
+    svc: VectorService,
+    storage_service: StorageService,
+    item_id: str,
+    user_id: str,
+) -> dict:
     """Return item by id or raise 404."""
     item = svc.get_point_by_id(
         item_id,
+        user_id=user_id,
         signed_url_resolver=storage_service.create_signed_url,
     )
     if item is None:
@@ -230,7 +226,7 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR0
         portfolio_repo = PortfolioItemRepository(sb, config.logger)
         sync_repo = VectorSyncJobRepository(sb, config.logger)
 
-        created_rows: list[PortfolioItemRow] = []
+        created_rows = []
 
         def _missing_storage_path() -> None:
             msg = 'Missing storage path after upload.'
@@ -320,9 +316,7 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR0
     ) -> PortfolioHistoryItem:  # pyright: ignore[reportUnusedFunction]
         svc = _require_vector_service()
         storage = _require_storage_service()
-        payload = _get_item_or_raise(svc, storage, item_id)
-        if payload.get('user_id') != user.user_id:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Item not found')
+        payload = _get_item_or_raise(svc, storage, item_id, user.user_id)
         return PortfolioHistoryItem.model_validate(payload)
 
     # Backward-compatible endpoint (deprecated).

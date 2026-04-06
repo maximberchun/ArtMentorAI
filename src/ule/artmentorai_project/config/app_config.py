@@ -60,6 +60,32 @@ class AppConfig(BaseSettings):
     upload: UploadConfig = Field(
         default_factory=UploadConfig, description='File upload configuration'
     )
+    qdrant_host: str = Field(default='localhost', description='Qdrant host')
+    qdrant_port: int = Field(default=6333, description='Qdrant HTTP port')
+    qdrant_api_key: str | None = Field(
+        default=None,
+        description='Optional Qdrant API key',
+    )
+    qdrant_collection_name: str = Field(
+        default='art_portfolio',
+        description='Qdrant collection name for vector points',
+    )
+    qdrant_timeout_seconds: float = Field(
+        default=10.0,
+        description='Qdrant request timeout in seconds',
+    )
+    embedding_model_name: str = Field(
+        default='BAAI/bge-small-en-v1.5',
+        description='Embedding model identifier',
+    )
+    embedding_size: int = Field(
+        default=384,
+        description='Embedding dimensionality',
+    )
+    embedding_cache_folder: str = Field(
+        default='./embeddings_cache',
+        description='Local folder for embedding model cache',
+    )
 
     # ============== Private Logger ==============
     _logger: logging.Logger | None = PrivateAttr(default=None)

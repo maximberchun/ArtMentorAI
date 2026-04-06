@@ -105,11 +105,7 @@ class VectorSyncWorker:
         if self._vector is not None:
             return self._vector
         try:
-            self._vector = VectorService(
-                host='localhost',
-                port=6333,
-                logger=self._logger,
-            )
+            self._vector = VectorService(config=self._config, logger=self._logger)
         except RuntimeError as e:
             if not self._vector_failed_logged:
                 self._logger.warning(

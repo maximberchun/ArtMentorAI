@@ -5,10 +5,11 @@ and FastEmbed for local embedding generation. Supports both critique records
 and portfolio items in a single collection, distinguished by payload ``type``.
 """
 
+from __future__ import annotations
+
 import logging
-from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from fastembed.embedding import FlagEmbedding
@@ -17,7 +18,11 @@ from qdrant_client.http import models
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 from qdrant_client.http.models import Distance, PointIdsList, PointStruct, VectorParams
 
-from ..models import AnalysisResponse
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from ..config import AppConfig
+    from ..models import AnalysisResponse
 
 # Payload type discriminator for Qdrant points
 PAYLOAD_TYPE_CRITIQUE = 'critique'
@@ -109,7 +114,7 @@ class ArtCritique:
         *,
         tags: list[str] | None = None,
         goals_snapshot: str | None = None,
-    ) -> 'ArtCritique':
+    ) -> ArtCritique:
         """Create ArtCritique from AnalysisResponse.
 
         Args:
@@ -190,50 +195,49 @@ class VectorService:
     - Collection management
     """
 
-    COLLECTION_NAME = 'art_portfolio'
-    EMBEDDING_MODEL = 'BAAI/bge-small-en-v1.5'
-    EMBEDDING_SIZE = 384
     DISTANCE_METRIC = Distance.COSINE
 
     def __init__(
         self,
-        host: str = 'localhost',
-        port: int = 6333,
+        config: AppConfig,
         logger: logging.Logger | None = None,
     ) -> None:
         """Initialize VectorService.
 
         Args:
-            host: Qdrant server host
-            port: Qdrant server port
+            config: Application config containing Qdrant/embedding runtime settings
             logger: Logger instance for debug info
 
         Raises:
             RuntimeError: If Qdrant connection fails
         """
         self.logger = logger or logging.getLogger(__name__)
-        self.host = host
-        self.port = port
+        self.host = config.qdrant_host
+        self.port = config.qdrant_port
+        self.collection_name = config.qdrant_collection_name
+        self.embedding_model_name = config.embedding_model_name
+        self.embedding_size = config.embedding_size
 
         try:
             # Initialize Qdrant client
             self.client = QdrantClient(
-                host=host,
-                port=port,
-                timeout=10.0,
+                host=self.host,
+                port=self.port,
+                api_key=config.qdrant_api_key,
+                timeout=config.qdrant_timeout_seconds,
             )
-            self.logger.debug('Connected to Qdrant at %s:%s', host, port)
+            self.logger.debug('Connected to Qdrant at %s:%s', self.host, self.port)
 
             # Initialize embedding model (downloads on first use)
             self.embedding_model = FlagEmbedding(
-                model_name=self.EMBEDDING_MODEL,
-                cache_folder='./embeddings_cache',
+                model_name=self.embedding_model_name,
+                cache_folder=config.embedding_cache_folder,
             )
-            self.logger.debug('Loaded embedding model: %s', self.EMBEDDING_MODEL)
+            self.logger.debug('Loaded embedding model: %s', self.embedding_model_name)
 
             # Ensure collection exists
             self._ensure_collection_exists()
-            self.logger.info('VectorService initialized with collection: %s', self.COLLECTION_NAME)
+            self.logger.info('VectorService initialized with collection: %s', self.collection_name)
 
         except Exception as e:
             self.logger.exception('Failed to initialize VectorService')
@@ -253,22 +257,22 @@ class VectorService:
             collections = self.client.get_collections()
             collection_names = [col.name for col in collections.collections]
 
-            if self.COLLECTION_NAME not in collection_names:
-                self.logger.info('Creating collection: %s', self.COLLECTION_NAME)
+            if self.collection_name not in collection_names:
+                self.logger.info('Creating collection: %s', self.collection_name)
                 self.client.create_collection(
-                    collection_name=self.COLLECTION_NAME,
+                    collection_name=self.collection_name,
                     vectors_config=VectorParams(
-                        size=self.EMBEDDING_SIZE,
+                        size=self.embedding_size,
                         distance=self.DISTANCE_METRIC,
                     ),
                 )
-                self.logger.info('Collection created: %s', self.COLLECTION_NAME)
+                self.logger.info('Collection created: %s', self.collection_name)
             else:
-                self.logger.debug('Collection already exists: %s', self.COLLECTION_NAME)
+                self.logger.debug('Collection already exists: %s', self.collection_name)
 
         except (ResponseHandlingException, UnexpectedResponse) as e:
-            self.logger.exception('Failed to manage collection %s', self.COLLECTION_NAME)
-            msg = f'Failed to manage collection {self.COLLECTION_NAME}: {e!s}'
+            self.logger.exception('Failed to manage collection %s', self.collection_name)
+            msg = f'Failed to manage collection {self.collection_name}: {e!s}'
             raise RuntimeError(msg) from e
 
     def _validate_critique(self, critique: ArtCritique) -> None:
@@ -333,7 +337,7 @@ class VectorService:
             payload['image_path'] = image_path
 
             self.client.upsert(
-                collection_name=self.COLLECTION_NAME,
+                collection_name=self.collection_name,
                 points=[
                     PointStruct(
                         id=point_id,
@@ -384,7 +388,7 @@ class VectorService:
             return
         try:
             self.client.delete(
-                collection_name=self.COLLECTION_NAME,
+                collection_name=self.collection_name,
                 points_selector=PointIdsList(points=ids),
             )
         except (ResponseHandlingException, UnexpectedResponse) as e:
@@ -413,7 +417,7 @@ class VectorService:
         qid = self._normalize_point_id(point_id)
         try:
             self.client.upsert(
-                collection_name=self.COLLECTION_NAME,
+                collection_name=self.collection_name,
                 points=[PointStruct(id=qid, vector=embedding_vector, payload=payload)],
             )
         except (ResponseHandlingException, UnexpectedResponse) as e:
@@ -437,7 +441,7 @@ class VectorService:
         qid = self._normalize_point_id(point_id)
         try:
             self.client.upsert(
-                collection_name=self.COLLECTION_NAME,
+                collection_name=self.collection_name,
                 points=[PointStruct(id=qid, vector=embedding_vector, payload=payload)],
             )
         except (ResponseHandlingException, UnexpectedResponse) as e:
@@ -482,7 +486,7 @@ class VectorService:
                 ]
             )
             response = self.client.query_points(
-                collection_name=self.COLLECTION_NAME,
+                collection_name=self.collection_name,
                 query=query_embedding,
                 limit=limit,
                 query_filter=query_filter,
@@ -547,7 +551,7 @@ class VectorService:
 
         try:
             self.client.upsert(
-                collection_name=self.COLLECTION_NAME,
+                collection_name=self.collection_name,
                 points=points_batch,
             )
             self.logger.info(
@@ -561,6 +565,32 @@ class VectorService:
             raise RuntimeError(msg) from e
 
         return point_ids
+
+    @staticmethod
+    def _normalize_type_filter(type_filter: str | None) -> str | None:
+        if type_filter is None:
+            return None
+        if type_filter not in {PAYLOAD_TYPE_CRITIQUE, PAYLOAD_TYPE_PORTFOLIO_ITEM}:
+            msg = (
+                'Invalid type filter. Expected one of: '
+                f'{PAYLOAD_TYPE_CRITIQUE}, {PAYLOAD_TYPE_PORTFOLIO_ITEM}.'
+            )
+            raise ValueError(msg)
+        return type_filter
+
+    @staticmethod
+    def _payload_matches_user_and_type(
+        payload: dict[str, Any],
+        *,
+        user_id: str,
+        type_filter: str | None,
+    ) -> bool:
+        payload_type = payload.get('type')
+        if payload.get('user_id') != user_id:
+            return False
+        if payload_type not in {PAYLOAD_TYPE_CRITIQUE, PAYLOAD_TYPE_PORTFOLIO_ITEM}:
+            return False
+        return not (type_filter is not None and payload_type != type_filter)
 
     def search_user_history(
         self,
@@ -587,24 +617,25 @@ class VectorService:
         Raises:
             RuntimeError: If scroll fails
         """
+        normalized_type_filter = self._normalize_type_filter(type_filter)
         must = [
             models.FieldCondition(
                 key='user_id',
                 match=models.MatchValue(value=user_id),
             ),
         ]
-        if type_filter is not None:
+        if normalized_type_filter is not None:
             must.append(
                 models.FieldCondition(
                     key='type',
-                    match=models.MatchValue(value=type_filter),
+                    match=models.MatchValue(value=normalized_type_filter),
                 )
             )
         scroll_filter = models.Filter(must=must)
 
         try:
             records, _ = self.client.scroll(
-                collection_name=self.COLLECTION_NAME,
+                collection_name=self.collection_name,
                 scroll_filter=scroll_filter,
                 limit=limit,
                 with_payload=True,
@@ -615,8 +646,12 @@ class VectorService:
             for point in records:
                 payload = point.payload or {}
                 payload['id'] = str(point.id) if point.id is not None else None
-                # Normalise type for backward compat (old points may lack type)
-                payload['type'] = payload.get('type') or PAYLOAD_TYPE_CRITIQUE
+                if not self._payload_matches_user_and_type(
+                    payload,
+                    user_id=user_id,
+                    type_filter=normalized_type_filter,
+                ):
+                    continue
                 image_path = payload.get('image_path')
                 if signed_url_resolver is not None and isinstance(image_path, str) and image_path:
                     payload['image_url'] = signed_url_resolver(image_path)
@@ -641,17 +676,22 @@ class VectorService:
     def get_point_by_id(
         self,
         point_id: str,
+        user_id: str,
+        type_filter: str | None = None,
         signed_url_resolver: Callable[[str], str | None] | None = None,
     ) -> dict[str, Any] | None:
         """Retrieve a single point by ID (for GET /portfolio/item/{id}).
 
         Args:
             point_id: Qdrant point ID (string or numeric string)
+            user_id: Owner user id to enforce tenant isolation
+            type_filter: Optional type discriminator ('critique' or 'portfolio_item')
             signed_url_resolver: Optional callback to map image paths to signed URLs
 
         Returns:
             Payload dict with id added, or None if not found
         """
+        normalized_type_filter = self._normalize_type_filter(type_filter)
         try:
             # Qdrant accepts int or str; keep as string for UUIDs
             try:
@@ -659,7 +699,7 @@ class VectorService:
             except ValueError:
                 id_val = point_id
             result = self.client.retrieve(
-                collection_name=self.COLLECTION_NAME,
+                collection_name=self.collection_name,
                 ids=[id_val],
                 with_payload=True,
                 with_vectors=False,
@@ -671,8 +711,13 @@ class VectorService:
                 return None
             point = result[0]
             payload = dict(point.payload or {})
+            if not self._payload_matches_user_and_type(
+                payload,
+                user_id=user_id,
+                type_filter=normalized_type_filter,
+            ):
+                return None
             payload['id'] = str(point.id)
-            payload['type'] = payload.get('type') or PAYLOAD_TYPE_CRITIQUE
             image_path = payload.get('image_path')
             if signed_url_resolver is not None and isinstance(image_path, str) and image_path:
                 payload['image_url'] = signed_url_resolver(image_path)
