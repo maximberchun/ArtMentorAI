@@ -48,7 +48,11 @@ class AppConfig(BaseSettings):
 
     # ============== CORS Settings ==============
     allowed_origins: list[str] = Field(
-        default=['http://localhost:3000', 'http://localhost:8000'],
+        default=[
+            'http://localhost:3000',
+            'http://localhost:5173',
+            'http://localhost:8000',
+        ],
         description='CORS allowed origins',
     )
 
