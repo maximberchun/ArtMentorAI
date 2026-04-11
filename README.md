@@ -12,6 +12,41 @@ A Python project
 
 
 
+## 🚀 Quick Start
+
+### Prerequisites
+
+- Python 3.12+
+- Docker Desktop (for Qdrant vector database)
+
+### Install Dependencies
+
+```bash
+uv sync
+```
+
+
+### Build Package
+
+```bash
+uv build
+# or: pip install .
+```
+
+### Start Qdrant (Vector Database)
+
+```bash
+docker compose up -d
+```
+
+### Run the Server
+
+```bash
+uv run artmentorai-project
+```
+
+The API will be available at `http://127.0.0.1:8000` with docs at `/docs`.
+
 ## 📚 Documentation
 
 - **MVP API contracts (stable)**: see `docs/api-contracts.md`

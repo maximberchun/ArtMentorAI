@@ -6,14 +6,28 @@ authors = [{name = "Maxim Berchun"}]
 maintainers = [
     { name = "Maxim Berchun", email = "mberch00@estudiantes.unileon.es" },
 ]
-dependencies = []
-requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]",
+    "python-multipart",
+    "pydantic>=2.0.0,<3.0.0",
+    "pydantic-settings>=2.0.0",
+    "python-dotenv",
+    "pydantic-ai-slim[google]",
+    "google-genai>=0.8.0",
+    "qdrant-client>=1.0.0",
+    "fastembed>=0.1.0",
+    "httpx>=0.24.0",
+    "PyJWT[crypto]",
+    "supabase>=2.0.0",
+]
+requires-python = ">=3.12"
 readme = "README.md"
 license = { file="LICENSE" }
 
 
 [project.scripts]
-artmentorai-project = "ULE..artmentorai_project.cli:main"
+artmentorai-project = "ule.artmentorai_project.cli:main"
 
 [project.optional-dependencies]
 test = [
@@ -32,6 +46,14 @@ test = [
 requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
+[tool.hatch.version]
+source = "vcs"
+fallback-version = "0.0.0"
+tag-pattern = "^(?P<version>(?!v)\\d+\\.\\d+\\.\\d+)$"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ule"]
+
 [tool.uv]
 allow-insecure-host = ["github.com"]
 default-groups = "all"
@@ -40,14 +62,7 @@ python-downloads = "automatic"
 python-preference = "only-managed"
 keyring-provider = "subprocess"
 index-strategy = "unsafe-best-match"
-
-[tool.hatch.version]
-source = "vcs"
-fallback-version = "0.0.0"
-tag-pattern = "^(?P<version>(?!v)\\d+\\.\\d+\\.\\d+)$"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/ULE"]
+package = true
 
 [tool.uv.pip]
 allow-empty-requirements = true
@@ -180,7 +195,7 @@ external = ["S"]                                             # Allow sonarlint e
 "**/__init__.py"= ["PLC0414"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["ULE"]
+known-first-party = ["ule"]
 
 [tool.ruff.format]
 quote-style = "single"

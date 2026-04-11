@@ -84,7 +84,7 @@ class AgentService:
         # Create agent
         self.agent = Agent(
             model=config.gemini.model_name,  # Reads from .env
-            result_type=AnalysisResponse,
+            output_type=AnalysisResponse,
             system_prompt=system_prompt,
             retries=3,
         )
