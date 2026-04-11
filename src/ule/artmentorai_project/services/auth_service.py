@@ -1,6 +1,7 @@
 """Supabase Auth verification helpers.
 
-This service verifies Supabase access tokens (JWTs) using the project's JWKS.
+This service verifies Supabase access tokens (JWTs) using the project's JWKS
+(RS256 or ES256, matching current Supabase signing keys).
 The API does not perform login itself; the frontend authenticates with Supabase
 and forwards the access token via `Authorization: Bearer <token>`.
 """
@@ -14,7 +15,7 @@ from typing import Any
 import httpx
 import jwt
 from fastapi import HTTPException, status
-from jwt.algorithms import RSAAlgorithm
+from jwt.algorithms import ECAlgorithm, RSAAlgorithm
 
 from ..config import AppConfig  # noqa: TC001
 from ..models import AuthUser
@@ -93,7 +94,7 @@ class AuthService:
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail='Invalid authorization token header',
             )
-        if alg != 'RS256':
+        if alg not in ('RS256', 'ES256'):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail='Unsupported token algorithm',
@@ -101,12 +102,15 @@ class AuthService:
 
         try:
             jwk = await self._get_jwk_for_kid(str(kid))
-            public_key = RSAAlgorithm.from_jwk(jwk)
+            if alg == 'RS256':
+                public_key = RSAAlgorithm.from_jwk(jwk)
+            else:
+                public_key = ECAlgorithm.from_jwk(jwk)
 
             claims = jwt.decode(
                 token,
                 key=public_key,
-                algorithms=['RS256'],
+                algorithms=[alg],
                 audience=self._config.supabase.jwt_aud,
                 issuer=self._config.supabase.resolved_issuer(),
                 options={

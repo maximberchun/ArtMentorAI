@@ -16,7 +16,7 @@ If a breaking change is required, it will ship under a versioned path (example: 
 - **Base URL**: whatever the server is hosted on (example: `http://localhost:8000`)
 - **Auth**:
   - Protected endpoints require `Authorization: Bearer <supabase_access_token>`
-  - Token verification uses Supabase JWT (RS256, JWKS, issuer/audience checks)
+  - Token verification uses Supabase JWT (JWKS; RS256 or ES256 per project signing key)
   - `user_id` is derived from token subject (`sub`) and is not trusted from client payloads
 - **Timestamps**: ISO-8601 strings (UTC)
 - **Errors**: FastAPI default error format, typically:

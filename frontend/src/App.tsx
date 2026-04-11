@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Link, Route, Routes } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { Link, Route, Routes, useNavigate } from 'react-router-dom'
 import { apiJson } from './lib/api'
 import { supabase } from './lib/supabase'
 
@@ -106,49 +106,89 @@ function Home() {
 }
 
 function SignIn() {
+  const navigate = useNavigate()
+  const formRef = useRef<HTMLFormElement>(null)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [message, setMessage] = useState<string | null>(null)
+  const [busy, setBusy] = useState<'signin' | 'signup' | 'google' | null>(null)
+
+  const supabaseMissing =
+    'Supabase env missing. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY, then restart the dev server.'
 
   async function signInEmail(e: React.FormEvent) {
     e.preventDefault()
     setMessage(null)
     if (!supabase) {
-      setMessage(
-        'Supabase env missing. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY, then restart the dev server.',
-      )
+      setMessage(supabaseMissing)
       return
     }
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
-    setMessage(error?.message ?? 'Signed in.')
+    setBusy('signin')
+    try {
+      const { error } = await supabase.auth.signInWithPassword({ email, password })
+      if (error) {
+        setMessage(error.message)
+        return
+      }
+      void navigate('/')
+    } finally {
+      setBusy(null)
+    }
   }
 
   async function signUpEmail() {
     setMessage(null)
-    if (!supabase) {
-      setMessage(
-        'Supabase env missing. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY, then restart the dev server.',
-      )
+    const form = formRef.current
+    if (form && !form.checkValidity()) {
+      form.reportValidity()
       return
     }
-    const { error } = await supabase.auth.signUp({ email, password })
-    setMessage(error?.message ?? 'Check your email to confirm, if required.')
+    if (!supabase) {
+      setMessage(supabaseMissing)
+      return
+    }
+    setBusy('signup')
+    try {
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          emailRedirectTo: `${window.location.origin}/sign-in`,
+        },
+      })
+      if (error) {
+        setMessage(error.message)
+        return
+      }
+      if (data.session) {
+        void navigate('/')
+        return
+      }
+      setMessage(
+        'Account created. Check your email for a confirmation link, then sign in here.',
+      )
+    } finally {
+      setBusy(null)
+    }
   }
 
   async function signInGoogle() {
     setMessage(null)
     if (!supabase) {
-      setMessage(
-        'Supabase env missing. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY, then restart the dev server.',
-      )
+      setMessage(supabaseMissing)
       return
     }
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: { redirectTo: window.location.origin },
-    })
-    if (error) {
-      setMessage(error.message)
+    setBusy('google')
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: { redirectTo: `${window.location.origin}/sign-in` },
+      })
+      if (error) {
+        setMessage(error.message)
+      }
+    } finally {
+      setBusy(null)
     }
   }
 
@@ -160,7 +200,7 @@ function SignIn() {
           Uses <code className="rounded bg-stone-100 px-1">@supabase/supabase-js</code> with env from{' '}
           <code className="rounded bg-stone-100 px-1">.env</code>.
         </p>
-        <form className="mt-4 space-y-3" onSubmit={signInEmail}>
+        <form ref={formRef} className="mt-4 space-y-3" onSubmit={signInEmail}>
           <label className="block text-sm font-medium text-stone-700">
             Email
             <input
@@ -177,35 +217,40 @@ function SignIn() {
             <input
               type="password"
               autoComplete="current-password"
+              minLength={6}
               className="mt-1 w-full rounded-md border border-stone-300 px-3 py-2 text-sm"
               value={password}
               onChange={(ev) => setPassword(ev.target.value)}
               required
             />
           </label>
+          <p className="text-xs text-stone-500">Use at least 6 characters (Supabase default minimum).</p>
           <div className="flex flex-wrap gap-2">
             <button
               type="submit"
-              className="rounded-md bg-stone-800 px-3 py-2 text-sm text-white hover:bg-stone-700"
+              disabled={busy !== null}
+              className="rounded-md bg-stone-800 px-3 py-2 text-sm text-white hover:bg-stone-700 disabled:opacity-50"
             >
-              Sign in
+              {busy === 'signin' ? 'Signing in…' : 'Sign in'}
             </button>
             <button
               type="button"
-              className="rounded-md border border-stone-300 bg-white px-3 py-2 text-sm hover:bg-stone-50"
+              disabled={busy !== null}
+              className="rounded-md border border-stone-300 bg-white px-3 py-2 text-sm hover:bg-stone-50 disabled:opacity-50"
               onClick={() => void signUpEmail()}
             >
-              Sign up
+              {busy === 'signup' ? 'Creating account…' : 'Sign up'}
             </button>
           </div>
         </form>
         <div className="my-4 border-t border-stone-200 pt-4">
           <button
             type="button"
-            className="w-full rounded-md border border-stone-300 bg-white px-3 py-2 text-sm hover:bg-stone-50"
+            disabled={busy !== null}
+            className="w-full rounded-md border border-stone-300 bg-white px-3 py-2 text-sm hover:bg-stone-50 disabled:opacity-50"
             onClick={() => void signInGoogle()}
           >
-            Continue with Google
+            {busy === 'google' ? 'Redirecting…' : 'Continue with Google'}
           </button>
         </div>
         {message && <p className="text-sm text-stone-700">{message}</p>}
