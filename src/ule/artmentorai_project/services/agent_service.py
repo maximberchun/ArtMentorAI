@@ -3,7 +3,7 @@
 import os
 
 from pydantic_ai import Agent, BinaryContent
-from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 
 from ..config import AppConfig
 from ..exceptions import AIServiceError
@@ -186,7 +186,7 @@ class AgentService:
 
             # Call agent (Pydantic AI handles image multimodal with Gemini)
             result = await self.agent.run(message)
-            analysis_data = result.data
+            analysis_data = result.output
 
             # Normalise result to AnalysisResponse
             if not isinstance(analysis_data, AnalysisResponse):
@@ -213,11 +213,22 @@ class AgentService:
                     message='AI service is temporarily unavailable. Please try again later.',
                     error_code='SERVICE_UNAVAILABLE',
                 ) from e
+            elif e.status_code == 503:
+                raise AIServiceError(
+                    message='AI service is temporarily unavailable. Please try again later.',
+                    error_code='SERVICE_UNAVAILABLE',
+                ) from e
             else:
                 raise AIServiceError(
                     message=f'AI service error: {e.message}',
                     error_code='API_ERROR',
                 ) from e
+        except UnexpectedModelBehavior as e:
+            self.logger.error('AI model output validation failed: %s', e.message)
+            raise AIServiceError(
+                message='AI response format invalid. Please try again.',
+                error_code='OUTPUT_VALIDATION_ERROR',
+            ) from e
         except Exception as e:
             self.logger.exception('Error analyzing image')
             msg = f'Gemini image analysis error: {e!s}'

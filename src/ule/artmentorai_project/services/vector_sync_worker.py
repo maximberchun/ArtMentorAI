@@ -7,7 +7,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from ..db.supabase_client import create_supabase_service_client
+from ..db import create_sync_supabase_service_client
 from ..models.db_rows import CritiqueRow, VectorSyncJobRow
 from ..repositories import (
     CritiqueRepository,
@@ -119,7 +119,7 @@ class VectorSyncWorker:
 
     def _run_batch(self) -> None:
         try:
-            sb = create_supabase_service_client(self._config)
+            sb = create_sync_supabase_service_client(self._config)
         except RuntimeError as e:
             self._logger.debug('Vector sync worker: Supabase not configured: %s', e)
             return
@@ -277,9 +277,7 @@ class VectorSyncWorker:
 
         asset = image_repo.get_by_id(row.image_asset_id)
         image_path = (
-            asset.storage_object_path
-            if asset is not None and asset.deleted_at is None
-            else None
+            asset.storage_object_path if asset is not None and asset.deleted_at is None else None
         )
         record = PortfolioRecord(
             filename=row.filename,

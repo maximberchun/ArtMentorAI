@@ -44,7 +44,7 @@ class ProgressSnapshotRepository:
             'critique_id': critique_id,
         }
         try:
-            response = self._client.table(self._table).insert(payload).select('*').execute()
+            response = self._client.table(self._table).insert(payload).execute()
         except Exception as exc:
             self._logger.exception('Failed to insert progress_snapshot user_id=%s', user_id)
             msg = f'Failed to save progress snapshot: {exc!s}'

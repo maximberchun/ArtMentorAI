@@ -27,7 +27,7 @@ class AnalysisResponse(BaseModel):
     constructive_advice: str = Field(
         ...,
         min_length=20,
-        max_length=500,
+        max_length=2000,
         description='Practical and constructive advice for improvement',
     )
 

@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from ..config import AppConfig
-from ..db.supabase_client import create_supabase_service_client
+from ..db import create_sync_supabase_service_client
 from ..exceptions import AIServiceError
 from ..models import AnalysisResponse, AuthUser, UserProfile
 from ..repositories import CritiqueRepository, ImageAssetRepository, VectorSyncJobRepository
@@ -332,7 +332,7 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
 
             synced_via_pg = False
             try:
-                sb = create_supabase_service_client(config)
+                sb = create_sync_supabase_service_client(config)
                 image_asset_id = None
                 if image_path is not None:
                     img_repo = ImageAssetRepository(sb, config.logger)

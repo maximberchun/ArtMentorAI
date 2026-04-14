@@ -42,7 +42,7 @@ class ImageAssetRepository:
             'byte_size': byte_size,
         }
         try:
-            response = self._client.table(self._table).insert(payload).select('*').execute()
+            response = self._client.table(self._table).insert(payload).execute()
         except Exception as exc:
             self._logger.exception(
                 'Failed to insert image_asset user_id=%s path=%s',
@@ -58,11 +58,7 @@ class ImageAssetRepository:
         """Return an image asset by primary key (any ``deleted_at``). Internal sync use."""
         try:
             response = (
-                self._client.table(self._table)
-                .select('*')
-                .eq('id', asset_id)
-                .limit(1)
-                .execute()
+                self._client.table(self._table).select('*').eq('id', asset_id).limit(1).execute()
             )
         except Exception as exc:
             self._logger.exception('Failed to load image_asset id=%s', asset_id)

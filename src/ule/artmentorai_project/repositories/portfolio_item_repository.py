@@ -42,7 +42,7 @@ class PortfolioItemRepository:
             'vector_point_id': vector_point_id,
         }
         try:
-            response = self._client.table(self._table).insert(payload).select('*').execute()
+            response = self._client.table(self._table).insert(payload).execute()
         except Exception as exc:
             self._logger.exception('Failed to insert portfolio_item user_id=%s', user_id)
             msg = f'Failed to save portfolio item: {exc!s}'
@@ -55,7 +55,7 @@ class PortfolioItemRepository:
         if not items:
             return []
         try:
-            response = self._client.table(self._table).insert(items).select('*').execute()
+            response = self._client.table(self._table).insert(items).execute()
         except Exception as exc:
             self._logger.exception('Failed bulk insert portfolio_items count=%s', len(items))
             msg = f'Failed to save portfolio items: {exc!s}'
@@ -67,11 +67,7 @@ class PortfolioItemRepository:
         """Return a portfolio row by primary key (any ``deleted_at``). Internal sync use."""
         try:
             response = (
-                self._client.table(self._table)
-                .select('*')
-                .eq('id', item_id)
-                .limit(1)
-                .execute()
+                self._client.table(self._table).select('*').eq('id', item_id).limit(1).execute()
             )
         except Exception as exc:
             self._logger.exception('Failed to load portfolio_item id=%s', item_id)

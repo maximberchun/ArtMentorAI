@@ -70,20 +70,24 @@ class VectorSyncJobRepository:
     def try_claim(self, job_id: str) -> VectorSyncJobRow | None:
         """Move one job from ``pending`` → ``processing``. Returns row if this worker won."""
         try:
-            response = (
+            update_resp = (
                 self._client.table(self._table)
                 .update({'status': 'processing'})
                 .eq('id', job_id)
                 .eq('status', 'pending')
-                .select('*')
                 .execute()
+            )
+            if not update_resp.data:
+                return None
+            get_resp = (
+                self._client.table(self._table).select('*').eq('id', job_id).limit(1).execute()
             )
         except Exception as exc:
             self._logger.exception('Failed to claim vector sync job id=%s', job_id)
             msg = f'Failed to claim vector sync job: {exc!s}'
             raise RuntimeError(msg) from exc
 
-        data = response.data
+        data = get_resp.data
         if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):
             return as_model(VectorSyncJobRow, data[0])
         return None
@@ -138,9 +142,9 @@ class VectorSyncJobRepository:
     def release_stale_processing(self, *, older_than_iso: str) -> None:
         """Recover jobs stuck in ``processing`` (e.g. worker crash)."""
         try:
-            self._client.table(self._table).update({'status': 'pending'}).eq('status', 'processing').lt(
-                'updated_at', older_than_iso
-            ).execute()
+            self._client.table(self._table).update({'status': 'pending'}).eq(
+                'status', 'processing'
+            ).lt('updated_at', older_than_iso).execute()
         except Exception as exc:
             self._logger.exception('Failed to release stale vector sync jobs')
             msg = f'Failed to release stale vector sync jobs: {exc!s}'

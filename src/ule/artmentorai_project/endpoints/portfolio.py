@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from ..config import AppConfig
-from ..db.supabase_client import create_supabase_service_client
+from ..db import create_sync_supabase_service_client
 from ..models import AuthUser, PortfolioHistoryItem, PortfolioUploadResponse
 from ..repositories import ImageAssetRepository, PortfolioItemRepository, VectorSyncJobRepository
 from ..repositories.vector_sync_job_repository import ENTITY_PORTFOLIO_ITEM, OP_UPSERT
@@ -215,7 +215,7 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR0
             storage,
         )
         try:
-            sb = create_supabase_service_client(config)
+            sb = create_sync_supabase_service_client(config)
         except RuntimeError as e:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

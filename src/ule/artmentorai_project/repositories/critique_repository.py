@@ -50,7 +50,7 @@ class CritiqueRepository:
             'vector_point_id': vector_point_id,
         }
         try:
-            response = self._client.table(self._table).insert(payload).select('*').execute()
+            response = self._client.table(self._table).insert(payload).execute()
         except Exception as exc:
             self._logger.exception('Failed to insert critique user_id=%s', user_id)
             msg = f'Failed to save critique: {exc!s}'
@@ -62,11 +62,7 @@ class CritiqueRepository:
         """Return a critique row by primary key (any ``deleted_at``). Internal sync use."""
         try:
             response = (
-                self._client.table(self._table)
-                .select('*')
-                .eq('id', critique_id)
-                .limit(1)
-                .execute()
+                self._client.table(self._table).select('*').eq('id', critique_id).limit(1).execute()
             )
         except Exception as exc:
             self._logger.exception('Failed to load critique id=%s', critique_id)
