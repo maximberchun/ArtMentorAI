@@ -15,6 +15,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from ..config import AppConfig
 from ..db.supabase_client import create_supabase_service_client
+from ..exceptions import AIServiceError
 from ..models import AnalysisResponse, AuthUser, UserProfile
 from ..repositories import CritiqueRepository, ImageAssetRepository, VectorSyncJobRepository
 from ..repositories.vector_sync_job_repository import ENTITY_CRITIQUE, OP_UPSERT
@@ -410,6 +411,16 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
             # Always return the analysis even if vector DB operations failed
             return analysis_result  # noqa: TRY300
 
+        except AIServiceError as e:
+            config.logger.warning('AI service error: %s (code=%s)', e.message, e.error_code)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    'error': e.error_code,
+                    'message': e.message,
+                    'retry_after': e.retry_after,
+                },
+            ) from e
         except HTTPException:
             raise
         except Exception as e:

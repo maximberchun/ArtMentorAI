@@ -3,8 +3,10 @@
 import os
 
 from pydantic_ai import Agent, BinaryContent
+from pydantic_ai.exceptions import ModelHTTPError
 
 from ..config import AppConfig
+from ..exceptions import AIServiceError
 from ..models import AnalysisResponse
 
 _BASE_PROMPT = (
@@ -40,7 +42,7 @@ _PAST_CRITIQUES_SECTION = (
 _PROFILE_CONTEXT_SECTION = (
     '\n\n---\n'
     "USER PROFILE: '{profile_context}'.\n"
-    'INSTRUCTION: Tailor your critique to the user\'s stated goals, preferred '
+    "INSTRUCTION: Tailor your critique to the user's stated goals, preferred "
     'and disliked styles, favorite artists, and experience level. When giving '
     'advice, connect it explicitly to these preferences when helpful.'
 )
@@ -197,7 +199,40 @@ class AgentService:
 
             self.logger.info('Analysis completed. Score: %s/10', analysis_data.score)
             return analysis_data  # noqa: TRY300
+        except ModelHTTPError as e:
+            self.logger.error('Gemini API error: %s (status=%s)', e.message, e.status_code)
+            if e.status_code == 429:
+                retry_after = self._extract_retry_delay(e.body)
+                raise AIServiceError(
+                    message='AI service quota exceeded. Please wait a moment before trying again.',
+                    error_code='QUOTA_EXCEEDED',
+                    retry_after=retry_after,
+                ) from e
+            elif e.status_code == 503:
+                raise AIServiceError(
+                    message='AI service is temporarily unavailable. Please try again later.',
+                    error_code='SERVICE_UNAVAILABLE',
+                ) from e
+            else:
+                raise AIServiceError(
+                    message=f'AI service error: {e.message}',
+                    error_code='API_ERROR',
+                ) from e
         except Exception as e:
             self.logger.exception('Error analyzing image')
             msg = f'Gemini image analysis error: {e!s}'
             raise ValueError(msg) from e
+
+    @staticmethod
+    def _extract_retry_delay(body: dict) -> float | None:
+        """Extract retry delay from API error response body."""
+        try:
+            details = body.get('details', [])
+            for detail in details:
+                if detail.get('@type') == 'type.googleapis.com/google.rpc.RetryInfo':
+                    retry_delay = detail.get('retryDelay', '')
+                    if retry_delay.endswith('s'):
+                        return float(retry_delay[:-1])
+        except Exception:
+            pass
+        return None
