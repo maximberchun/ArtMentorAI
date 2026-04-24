@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from ..models import UserProfile
 
 from ..models.db_rows import ProfileRow
-from ._rows import as_model, as_model_list, single_row_dict
+from ._rows import as_model_list
 
 
 class ProfileRepository:
@@ -56,18 +56,17 @@ class ProfileRepository:
             'deleted_at': None,
         }
         try:
-            response = (
-                self._client.table(self._table)
-                .upsert(payload, on_conflict='user_id')
-                .select('*')
-                .execute()
-            )
+            self._client.table(self._table).upsert(payload, on_conflict='user_id').execute()
         except Exception as exc:
             self._logger.exception('Failed to upsert profile user_id=%s', profile.user_id)
             msg = f'Failed to save profile: {exc!s}'
             raise RuntimeError(msg) from exc
 
-        return as_model(ProfileRow, single_row_dict(response.data))
+        row = self.get_active(profile.user_id)
+        if row is None:
+            msg = 'Failed to reload profile after upsert.'
+            raise RuntimeError(msg)
+        return row
 
     def soft_delete(self, user_id: str) -> bool:
         """Mark the profile as deleted. Returns whether a row was updated."""

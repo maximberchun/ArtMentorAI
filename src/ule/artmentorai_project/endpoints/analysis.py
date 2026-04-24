@@ -137,7 +137,7 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
 
     # Initialize services
     agent_service = AgentService(config)
-    profile_service = ProfileService(logger=config.logger)
+    profile_service = ProfileService(config=config, logger=config.logger)
     current_user = _build_current_user_dependency(config)
     try:
         vector_service: VectorService | None = get_vector_service(config)

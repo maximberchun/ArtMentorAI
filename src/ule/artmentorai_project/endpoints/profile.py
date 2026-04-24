@@ -42,7 +42,7 @@ def create_profile_router(config: AppConfig) -> APIRouter:
         },
     )
 
-    profile_service = ProfileService(logger=config.logger)
+    profile_service = ProfileService(config=config, logger=config.logger)
     current_user = _build_current_user_dependency(config)
 
     @router.get(
