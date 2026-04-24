@@ -47,7 +47,6 @@ _PROFILE_CONTEXT_SECTION = (
     'advice, connect it explicitly to these preferences when helpful.'
 )
 
-
 class AgentService:
     """Service for AI-powered artwork analysis using Pydantic AI and Gemini."""
 

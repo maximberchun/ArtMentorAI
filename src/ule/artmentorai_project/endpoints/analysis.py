@@ -90,6 +90,48 @@ def _format_profile_for_prompt(profile: UserProfile) -> str:
     return ' | '.join(parts)
 
 
+def _format_portfolio_neighbors_for_prompt(records: list[dict]) -> str | None:
+    """Create compact portfolio context text for AI prompt injection."""
+    lines: list[str] = []
+    for record in records:
+        filename = record.get('filename') or 'unknown'
+        tags = record.get('tags') or []
+        description = record.get('description') or ''
+        similarity_score = record.get('similarity_score')
+        formatted_tags = ', '.join(tag for tag in tags if isinstance(tag, str))
+        similarity_part = (
+            f' | Similarity: {similarity_score:.3f}'
+            if isinstance(similarity_score, float | int)
+            else ''
+        )
+        line = (
+            f'- File: {filename}'
+            f' | Tags: {formatted_tags or "none"}'
+            f' | Notes: {description or "none"}'
+            f'{similarity_part}'
+        )
+        lines.append(line)
+    return '\n'.join(lines) or None
+
+
+def _merge_memory_context(
+    past_critiques: str | None,
+    portfolio_context: str | None,
+) -> str | None:
+    """Combine critique and portfolio memory into one prompt-safe text block."""
+    sections: list[str] = []
+    if past_critiques and past_critiques.strip():
+        sections.append(f'Past critiques:\n{past_critiques.strip()}')
+    if portfolio_context and portfolio_context.strip():
+        sections.append(
+            'Relevant portfolio neighbors:\n'
+            f'{portfolio_context.strip()}\n'
+            'Instruction: Compare this submission against these related portfolio pieces, '
+            'highlighting repeated strengths and recurring mistakes.'
+        )
+    return '\n\n'.join(sections) if sections else None
+
+
 def _require_at_least_one_input(
     file: UploadFile | None,
     user_input: str | None,
@@ -260,6 +302,7 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
             )
 
             past_critiques_str: str | None = None
+            portfolio_context_str: str | None = None
             if vector_service is not None:
                 try:
                     # Use the user's own comment as the semantic query when
@@ -291,6 +334,25 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                     else:
                         config.logger.debug(
                             'No past critiques found for user_id=%s — proceeding without memory',
+                            user.user_id,
+                        )
+
+                    portfolio_neighbors = vector_service.search_similar_portfolio_items(
+                        query_text=memory_query,
+                        user_id=user.user_id,
+                    )
+                    if portfolio_neighbors:
+                        portfolio_context_str = _format_portfolio_neighbors_for_prompt(
+                            portfolio_neighbors
+                        )
+                        config.logger.debug(
+                            'Injecting %d portfolio neighbor(s) into prompt for user_id=%s',
+                            len(portfolio_neighbors),
+                            user.user_id,
+                        )
+                    else:
+                        config.logger.debug(
+                            'No portfolio neighbors found for user_id=%s',
                             user.user_id,
                         )
                 except (ConnectionError, TimeoutError, OSError, RuntimeError) as memory_error:
@@ -329,7 +391,10 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                 image_bytes=image_bytes,
                 mime_type=mime_type,
                 user_input=user_input,
-                past_critiques=past_critiques_str,
+                past_critiques=_merge_memory_context(
+                    past_critiques=past_critiques_str,
+                    portfolio_context=portfolio_context_str,
+                ),
                 profile_context=profile_context_str,
             )
 

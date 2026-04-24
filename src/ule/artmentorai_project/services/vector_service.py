@@ -514,6 +514,68 @@ class VectorService:
         else:
             return results
 
+    def search_similar_portfolio_items(
+        self,
+        query_text: str,
+        user_id: str,
+        limit: int = 5,
+    ) -> list[dict]:
+        """Search for similar portfolio items in the vector database.
+
+        Args:
+            query_text: Text to search for similar portfolio items
+            user_id: Unique identifier for the user to scope search results
+            limit: Maximum number of results to return
+
+        Returns:
+            list[dict]: List of similar portfolio items with scores and metadata
+
+        Raises:
+            RuntimeError: If search fails
+        """
+        try:
+            query_embedding = next(iter(self.embedding_model.embed(query_text))).tolist()
+
+            query_filter = models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key='user_id',
+                        match=models.MatchValue(value=user_id),
+                    ),
+                    models.FieldCondition(
+                        key='type',
+                        match=models.MatchValue(value=PAYLOAD_TYPE_PORTFOLIO_ITEM),
+                    ),
+                ]
+            )
+            response = self.client.query_points(
+                collection_name=self.collection_name,
+                query=query_embedding,
+                limit=limit,
+                query_filter=query_filter,
+            )
+
+            results = [
+                {
+                    'similarity_score': point.score,
+                    'filename': point.payload.get('filename'),
+                    'description': point.payload.get('description'),
+                    'tags': point.payload.get('tags') or [],
+                    'image_path': point.payload.get('image_path'),
+                    'timestamp': point.payload.get('timestamp'),
+                    'user_id': point.payload.get('user_id'),
+                }
+                for point in response.points
+            ]
+
+            self.logger.debug('Found %d similar portfolio items for query', len(results))
+        except (ResponseHandlingException, UnexpectedResponse) as e:
+            self.logger.exception('Error searching portfolio items')
+            msg = f'Failed to search portfolio items: {e!s}'
+            raise RuntimeError(msg) from e
+        else:
+            return results
+
     def save_portfolio_items(
         self,
         user_id: str,
