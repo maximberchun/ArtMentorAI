@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime  # noqa: TC003
+from datetime import date, datetime  # noqa: TC003
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -112,11 +112,27 @@ class ProgressSnapshotRow(BaseModel):
     deleted_at: datetime | None = None
 
 
+class UserProgressRow(BaseModel):
+    """Row from ``public.user_progress``."""
+
+    model_config = ConfigDict(extra='ignore')
+
+    user_id: str
+    total_xp: int = 0
+    current_level: int = 1
+    streak_count: int = 0
+    streak_last_date: date | None = None
+    badges: list[str] = Field(default_factory=list)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
 __all__ = [
     'CritiqueRow',
     'ImageAssetRow',
     'PortfolioItemRow',
     'ProfileRow',
     'ProgressSnapshotRow',
+    'UserProgressRow',
     'VectorSyncJobRow',
 ]

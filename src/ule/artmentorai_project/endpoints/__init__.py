@@ -16,11 +16,13 @@ from .auth import create_auth_router
 from .analysis import create_analysis_router
 from .portfolio import create_portfolio_router
 from .profile import create_profile_router
+from .progress import create_progress_router
 
 __all__ = [
     'create_auth_router',
     'create_analysis_router',
     'create_portfolio_router',
     'create_profile_router',
+    'create_progress_router',
 ]
 

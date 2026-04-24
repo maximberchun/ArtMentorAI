@@ -17,6 +17,7 @@ from .endpoints import (
     create_auth_router,
     create_portfolio_router,
     create_profile_router,
+    create_progress_router,
 )
 from .exceptions import UserExceptionError
 from .services.vector_sync_worker import VectorSyncWorker
@@ -74,9 +75,14 @@ def create_app(config: AppConfig) -> FastAPI:
     portfolio_router = create_portfolio_router(config)
     app.include_router(portfolio_router)
 
+    # Progress endpoint (private XP/level/streak and snapshots)
+    progress_router = create_progress_router(config)
+    app.include_router(progress_router)
+
     config.logger.debug('Analysis router registered at /analysis')
     config.logger.debug('Profile router registered at /profile')
     config.logger.debug('Portfolio router registered at /portfolio')
+    config.logger.debug('Progress router registered at /progress')
 
     # ============== Add Middleware ==============
     config.logger.info('Configuring middleware')
@@ -120,6 +126,7 @@ def create_app(config: AppConfig) -> FastAPI:
                 'portfolio_upload': 'POST /portfolio/upload',
                 'portfolio_history': 'GET /portfolio/history/me',
                 'portfolio_item': 'GET /portfolio/item/{item_id}',
+                'progress_me': 'GET /progress/me',
             },
         }
 

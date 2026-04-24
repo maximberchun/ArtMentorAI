@@ -17,7 +17,13 @@ from ..config import AppConfig
 from ..db import create_sync_supabase_service_client
 from ..exceptions import AIServiceError
 from ..models import AnalysisResponse, AuthUser, UserProfile
-from ..repositories import CritiqueRepository, ImageAssetRepository, VectorSyncJobRepository
+from ..repositories import (
+    CritiqueRepository,
+    ImageAssetRepository,
+    ProgressSnapshotRepository,
+    UserProgressRepository,
+    VectorSyncJobRepository,
+)
 from ..repositories.vector_sync_job_repository import ENTITY_CRITIQUE, OP_UPSERT
 from ..services import AgentService, ProfileService, StorageService
 from ..services.auth_service import AuthService
@@ -358,6 +364,30 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                     image_asset_id=image_asset_id,
                     artwork_filename=artwork_filename,
                 )
+                try:
+                    dimension_scores = {
+                        'overall_score_1_to_10': analysis_result.score,
+                        'technical_error_count': len(analysis_result.technical_errors),
+                    }
+                    ProgressSnapshotRepository(sb, config.logger).create(
+                        user_id=user.user_id,
+                        critique_id=row.id,
+                        rubric_key='critique_quality',
+                        rubric_version='1.0',
+                        dimension_scores=dimension_scores,
+                        aggregate_score=float(analysis_result.score),
+                        narrative=analysis_result.summary,
+                    )
+                    UserProgressRepository(sb, config.logger).upsert_after_critique(
+                        user_id=user.user_id,
+                        score=analysis_result.score,
+                    )
+                except RuntimeError as progress_error:
+                    config.logger.warning(
+                        'Progress persistence skipped for user_id=%s: %s',
+                        user.user_id,
+                        str(progress_error),
+                    )
                 VectorSyncJobRepository(sb, config.logger).enqueue(
                     ENTITY_CRITIQUE,
                     row.id,

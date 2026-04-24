@@ -12,7 +12,13 @@ on data representation, separate from business logic (`services`) and
 infrastructure concerns (`core`).
 """
 
-from .responses import AnalysisResponse, PortfolioHistoryItem, PortfolioUploadResponse
+from .responses import (
+    AnalysisResponse,
+    PortfolioHistoryItem,
+    PortfolioUploadResponse,
+    ProgressMeResponse,
+    ProgressSnapshotSummary,
+)
 from .auth_user import AuthUser
 from .user_profile import UserProfile, UserProfileBase
 
@@ -21,6 +27,8 @@ __all__ = [
     'AuthUser',
     'PortfolioHistoryItem',
     'PortfolioUploadResponse',
+    'ProgressMeResponse',
+    'ProgressSnapshotSummary',
     'UserProfile',
     'UserProfileBase',
 ]

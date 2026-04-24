@@ -21,8 +21,8 @@ export function HomePage() {
     <section className="space-y-4">
       <h2 className="text-xl font-semibold">Frontend MVP</h2>
       <p className="text-sm text-stone-600">
-        This app is wired to the current API contracts for auth, profile, critique, portfolio, and
-        history.
+        This app is wired to the current API contracts for auth, profile, critique, portfolio,
+        history, and progress.
       </p>
       <button
         type="button"

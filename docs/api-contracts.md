@@ -1,7 +1,7 @@
 ## ArtMentorAI MVP API contracts (stable)
 
 **Contract version**: `v1` (frozen on 2026-03-17)  
-**Applies to**: current backend routes under `/auth`, `/analysis`, `/profile`, `/portfolio`
+**Applies to**: current backend routes under `/auth`, `/analysis`, `/profile`, `/portfolio`, `/progress`
 
 This document is the **source of truth** for frontend integration. Until an explicit `v2` is introduced, we will avoid breaking changes by:
 
@@ -350,3 +350,49 @@ Same shape as a single `PortfolioHistoryItem`.
 - It only works when `{user_id}` equals the authenticated token user id; otherwise:
   - **403**: forbidden
 
+---
+
+## Progress API (private)
+
+### GET `/progress/me`
+
+Return private progress metrics for the authenticated user. This endpoint is intended for personal dashboard usage only (no public leaderboard data).
+
+**Headers**
+
+- **`Authorization`** (required): `Bearer <supabase_access_token>`
+
+**Status codes**
+
+- **200**: success
+- **401**: missing/invalid/expired token
+- **500**: storage error
+
+**Response (200) — `ProgressMeResponse`**
+
+```json
+{
+  "user_id": "9f6dd1db-1f67-4ef2-9f0f-2cbd5d0475f8",
+  "total_xp": 180,
+  "current_level": 1,
+  "streak_count": 3,
+  "streak_last_date": "2026-04-24",
+  "badges": [],
+  "latest_snapshot": {
+    "id": "fb6c43f1-4336-4afc-a3e6-8ad9ae53b8f6",
+    "critique_id": "f0e2b48d-0b64-4ae6-9c58-8b6c2f2b4f55",
+    "rubric_key": "critique_quality",
+    "aggregate_score": 8.0,
+    "created_at": "2026-04-24T15:40:22.123456+00:00"
+  },
+  "recent_snapshots": [
+    {
+      "id": "fb6c43f1-4336-4afc-a3e6-8ad9ae53b8f6",
+      "critique_id": "f0e2b48d-0b64-4ae6-9c58-8b6c2f2b4f55",
+      "rubric_key": "critique_quality",
+      "aggregate_score": 8.0,
+      "created_at": "2026-04-24T15:40:22.123456+00:00"
+    }
+  ]
+}
+```

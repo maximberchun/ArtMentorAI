@@ -8,7 +8,7 @@ import { HistoryPage } from './pages/HistoryPage'
 import { HomePage } from './pages/HomePage'
 import { PortfolioPage } from './pages/PortfolioPage'
 import { ProfilePage } from './pages/ProfilePage'
-import { ProgressPlaceholderPage } from './pages/ProgressPlaceholderPage'
+import { ProgressPage } from './pages/ProgressPage'
 import { SignInPage } from './pages/SignInPage'
 
 export default function App() {
@@ -34,7 +34,7 @@ export default function App() {
       <Route path="/critique" element={withAuth(<CritiquePage />)} />
       <Route path="/portfolio" element={withAuth(<PortfolioPage />)} />
       <Route path="/history" element={withAuth(<HistoryPage />)} />
-      <Route path="/progress" element={withAuth(<ProgressPlaceholderPage />)} />
+      <Route path="/progress" element={withAuth(<ProgressPage />)} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )

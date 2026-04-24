@@ -11,6 +11,11 @@ export function CritiquePage() {
 
   async function submitCritique(e: FormEvent) {
     e.preventDefault()
+    if (!file && !userInput.trim()) {
+      setError('Provide at least an image or a text prompt before submitting.')
+      setResult(null)
+      return
+    }
     setBusy(true)
     setError(null)
     setResult(null)

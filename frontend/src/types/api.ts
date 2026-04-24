@@ -40,3 +40,22 @@ export type PortfolioHistoryItem = {
 export type UploadResponse = {
   ids: string[]
 }
+
+export type ProgressSnapshotSummary = {
+  id: string
+  critique_id: string | null
+  rubric_key: string
+  aggregate_score: number | null
+  created_at: string | null
+}
+
+export type ProgressMeResponse = {
+  user_id: string
+  total_xp: number
+  current_level: number
+  streak_count: number
+  streak_last_date: string | null
+  badges: string[]
+  latest_snapshot: ProgressSnapshotSummary | null
+  recent_snapshots: ProgressSnapshotSummary[]
+}

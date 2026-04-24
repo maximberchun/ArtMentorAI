@@ -13,9 +13,12 @@ to the client. They should remain independent from request validation
 
 from .analysis_response import AnalysisResponse
 from .portfolio_response import PortfolioHistoryItem, PortfolioUploadResponse
+from .progress_response import ProgressMeResponse, ProgressSnapshotSummary
 
 __all__ = [
     'AnalysisResponse',
     'PortfolioHistoryItem',
     'PortfolioUploadResponse',
+    'ProgressMeResponse',
+    'ProgressSnapshotSummary',
 ]
