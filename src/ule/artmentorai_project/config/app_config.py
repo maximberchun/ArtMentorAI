@@ -1,7 +1,7 @@
 """Application configuration container for ArtMentor AI."""
 
 import logging
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import ConfigDict, Field, PrivateAttr
 from pydantic_settings import BaseSettings
@@ -91,6 +91,42 @@ class AppConfig(BaseSettings):
     embedding_cache_folder: str = Field(
         default='./embeddings_cache',
         description='Local folder for embedding model cache',
+    )
+    web_search_enabled: bool = Field(
+        default=False,
+        description='Enable web-search tool for the AI agent',
+    )
+    web_search_provider: Literal['serper'] = Field(
+        default='serper',
+        description='Configured web-search provider identifier',
+    )
+    web_search_api_key: str | None = Field(
+        default=None,
+        description='API key for the configured web-search provider',
+    )
+    web_search_timeout_seconds: float = Field(
+        default=8.0,
+        ge=1.0,
+        le=30.0,
+        description='Timeout for outbound web-search requests',
+    )
+    web_search_max_calls_per_request: int = Field(
+        default=2,
+        ge=1,
+        le=5,
+        description='Maximum number of tool calls the model can make per critique request',
+    )
+    web_search_max_results: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description='Maximum number of search hits returned per tool call',
+    )
+    web_search_max_query_chars: int = Field(
+        default=240,
+        ge=32,
+        le=500,
+        description='Maximum length accepted for model-generated web-search queries',
     )
 
     # ============== Private Logger ==============

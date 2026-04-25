@@ -1,7 +1,10 @@
 """AI Agent service for artwork analysis using Pydantic AI and Gemini."""
 
+import asyncio
 import os
+from typing import Any
 
+import httpx
 from pydantic_ai import Agent, BinaryContent
 from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 
@@ -47,8 +50,19 @@ _PROFILE_CONTEXT_SECTION = (
     'advice, connect it explicitly to these preferences when helpful.'
 )
 
+
+_WEB_SEARCH_SYSTEM_INSTRUCTIONS = """
+                    6. Use tool `web_search` only when you need external factual references
+                       (e.g., artist context, art-history facts, medium techniques).
+                    7. Never use web search for private user data, secrets, or policy decisions.
+                    8. Use concise, focused queries and at most a few tool calls.
+                    9. If tool output is unavailable, continue without fabricating citations.
+"""
+
+
 class AgentService:
     """Service for AI-powered artwork analysis using Pydantic AI and Gemini."""
+    _MODEL_RUN_TIMEOUT_SECONDS = 60.0
 
     def __init__(self, config: AppConfig) -> None:
         """
@@ -59,6 +73,7 @@ class AgentService:
         """
         self.config = config
         self.logger = config.logger
+        self._search_calls_used = 0
 
         # Initialize Gemini model
         os.environ['GEMINI_API_KEY'] = config.gemini.api_key
@@ -73,6 +88,12 @@ class AgentService:
                     3. Provide a FAIR score between 1 (beginner) and 10 (mastery).
                     4. The advice must be PRACTICAL and actionable.
                     5. Be encouraging but honest - the goal is student growth.
+                    """
+
+        if config.web_search_enabled:
+            system_prompt += _WEB_SEARCH_SYSTEM_INSTRUCTIONS
+
+        system_prompt += """
 
                     REQUIRED RESPONSE (JSON):
                     {
@@ -89,8 +110,140 @@ class AgentService:
             system_prompt=system_prompt,
             retries=3,
         )
+        self._register_web_search_tool()
 
         self.logger.info('AgentService initialized successfully')
+
+    def _register_web_search_tool(self) -> None:
+        """Register a bounded web-search tool when enabled and configured."""
+        if not self.config.web_search_enabled:
+            return
+
+        if not self.config.web_search_api_key:
+            self.logger.warning(
+                'Web-search tool enabled but WEB_SEARCH_API_KEY is missing; tool disabled.'
+            )
+            return
+
+        tool_decorator: Any = getattr(
+            self.agent,
+            'tool_plain',
+            None,
+        )
+        if tool_decorator is None:
+            tool_decorator = getattr(self.agent, 'tool', None)
+        if tool_decorator is None:
+            self.logger.warning('Current PydanticAI Agent implementation has no tool decorator.')
+            return
+
+        @tool_decorator
+        async def web_search(query: str) -> str:
+            """Fetch concise factual references from web search."""
+            cleaned_query = ' '.join(query.split()).strip()
+            if not cleaned_query:
+                self.logger.info('Web-search tool call skipped: empty query')
+                return 'Web search skipped: empty query.'
+
+            max_chars = self.config.web_search_max_query_chars
+            if len(cleaned_query) > max_chars:
+                cleaned_query = cleaned_query[:max_chars]
+
+            if self._search_calls_used >= self.config.web_search_max_calls_per_request:
+                self.logger.info(
+                    'Web-search tool call skipped: limit reached (%d/%d)',
+                    self._search_calls_used,
+                    self.config.web_search_max_calls_per_request,
+                )
+                return (
+                    'Web search skipped: per-request tool-call limit reached. '
+                    'Continue with available context.'
+                )
+
+            self._search_calls_used += 1
+            self.logger.info(
+                'Web-search tool call %d/%d | query="%s"',
+                self._search_calls_used,
+                self.config.web_search_max_calls_per_request,
+                cleaned_query,
+            )
+            results = await self._run_serper_search(cleaned_query)
+            if not results:
+                self.logger.info(
+                    'Web-search tool returned no results for query="%s"',
+                    cleaned_query,
+                )
+                return 'No reliable web results were retrieved.'
+
+            self.logger.info(
+                'Web-search tool returned %d result(s) for query="%s"',
+                len(results),
+                cleaned_query,
+            )
+            lines = [
+                f"- {item['title']} ({item['url']}): {item['snippet']}"
+                for item in results
+                if item.get('title') and item.get('url')
+            ]
+            return '\n'.join(lines) if lines else 'No reliable web results were retrieved.'
+
+        self.logger.info(
+            'Web-search tool registered (provider=%s, max_calls=%d, max_results=%d)',
+            self.config.web_search_provider,
+            self.config.web_search_max_calls_per_request,
+            self.config.web_search_max_results,
+        )
+
+    async def _run_serper_search(self, query: str) -> list[dict[str, str]]:
+        """Execute Serper search and return sanitized snippets."""
+        if self.config.web_search_provider != 'serper' or not self.config.web_search_api_key:
+            return []
+
+        endpoint = 'https://google.serper.dev/search'
+        headers = {
+            'X-API-KEY': self.config.web_search_api_key,
+            'Content-Type': 'application/json',
+        }
+        payload = {
+            'q': query,
+            'num': self.config.web_search_max_results,
+        }
+
+        self.logger.debug(
+            'Executing provider web search (provider=%s, max_results=%d)',
+            self.config.web_search_provider,
+            self.config.web_search_max_results,
+        )
+        try:
+            timeout = httpx.Timeout(self.config.web_search_timeout_seconds)
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(endpoint, headers=headers, json=payload)
+            response.raise_for_status()
+            data = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            self.logger.warning('Web-search request failed: %s', str(exc))
+            return []
+
+        organic = data.get('organic', [])
+        if not isinstance(organic, list):
+            return []
+
+        safe_results: list[dict[str, str]] = []
+        for item in organic[: self.config.web_search_max_results]:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get('title', '')).strip()
+            url = str(item.get('link', '')).strip()
+            snippet = str(item.get('snippet', '')).strip()
+            if not title or not url:
+                continue
+            safe_results.append(
+                {
+                    'title': title[:180],
+                    'url': url[:500],
+                    'snippet': snippet[:320],
+                }
+            )
+        return safe_results
 
     @staticmethod
     def _build_prompt(
@@ -164,6 +317,7 @@ class AgentService:
             ValueError: If there's an error calling Gemini or validating the response.
         """
         try:
+            self._search_calls_used = 0
             # Create user prompt
             prompt = self._build_prompt(user_input, past_critiques, profile_context)
             message: list = [prompt]
@@ -184,7 +338,15 @@ class AgentService:
                 )
 
             # Call agent (Pydantic AI handles image multimodal with Gemini)
-            result = await self.agent.run(message)
+            self.logger.info(
+                'Submitting request to Gemini (timeout=%ss, web_search_enabled=%s)',
+                self._MODEL_RUN_TIMEOUT_SECONDS,
+                self.config.web_search_enabled,
+            )
+            result = await asyncio.wait_for(
+                self.agent.run(message),
+                timeout=self._MODEL_RUN_TIMEOUT_SECONDS,
+            )
             analysis_data = result.output
 
             # Normalise result to AnalysisResponse
@@ -227,6 +389,15 @@ class AgentService:
             raise AIServiceError(
                 message='AI response format invalid. Please try again.',
                 error_code='OUTPUT_VALIDATION_ERROR',
+            ) from e
+        except TimeoutError as e:
+            self.logger.error(
+                'Gemini request timed out after %ss',
+                self._MODEL_RUN_TIMEOUT_SECONDS,
+            )
+            raise AIServiceError(
+                message='AI request timed out. Please try again.',
+                error_code='TIMEOUT',
             ) from e
         except Exception as e:
             self.logger.exception('Error analyzing image')
