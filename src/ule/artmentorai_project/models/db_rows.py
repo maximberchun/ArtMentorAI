@@ -48,10 +48,11 @@ class CritiqueRow(BaseModel):
 
     id: str
     user_id: str
+    conversation_id: str | None = None
     image_asset_id: str | None = None
     artwork_filename: str | None = None
     summary: str
-    score: int
+    score: int | None = None
     technical_errors: list[Any] = Field(default_factory=list)
     constructive_advice: str
     tags: list[str] = Field(default_factory=list)
@@ -127,7 +128,37 @@ class UserProgressRow(BaseModel):
     updated_at: datetime | None = None
 
 
+class ConversationRow(BaseModel):
+    """Row from ``public.conversations``."""
+
+    model_config = ConfigDict(extra='ignore')
+
+    id: str
+    user_id: str
+    title: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    deleted_at: datetime | None = None
+
+
+class ConversationMessageRow(BaseModel):
+    """Row from ``public.conversation_messages``."""
+
+    model_config = ConfigDict(extra='ignore')
+
+    id: str
+    conversation_id: str
+    user_id: str
+    role: str
+    content: str
+    critique_id: str | None = None
+    created_at: datetime | None = None
+    deleted_at: datetime | None = None
+
+
 __all__ = [
+    'ConversationMessageRow',
+    'ConversationRow',
     'CritiqueRow',
     'ImageAssetRow',
     'PortfolioItemRow',

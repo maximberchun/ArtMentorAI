@@ -50,6 +50,20 @@ _PROFILE_CONTEXT_SECTION = (
     'advice, connect it explicitly to these preferences when helpful.'
 )
 
+_CONVERSATION_CONTEXT_SECTION = (
+    '\n\n---\n'
+    "RECENT CONVERSATION TURNS: '{conversation_context}'.\n"
+    'INSTRUCTION: Preserve continuity with the recent thread while prioritizing the '
+    'current artwork and user request.'
+)
+
+_NO_ARTWORK_SCORING_SECTION = (
+    '\n\n---\n'
+    'NO ARTWORK UPLOADED.\n'
+    'INSTRUCTION: Because there is no image, do not assign a numeric artwork score. '
+    'Return `"score": null` and focus feedback on the provided text context only.'
+)
+
 
 _WEB_SEARCH_SYSTEM_INSTRUCTIONS = """
                     6. Use tool `web_search` only when you need external factual references
@@ -250,6 +264,8 @@ class AgentService:
         user_input: str | None,
         past_critiques: str | None,
         profile_context: str | None,
+        conversation_context: str | None,
+        has_artwork: bool,
     ) -> str:
         """Construct the user-turn prompt sent to Gemini.
 
@@ -266,6 +282,9 @@ class AgentService:
                 no history exists yet.
             profile_context: Optional textual summary of the user profile used
                 to personalise the critique (goals, preferences, artists, level).
+            conversation_context: Optional recent conversation turns used for
+                short-term memory continuity.
+            has_artwork: Whether an artwork image was provided in the request.
 
         Returns:
             A fully-formed prompt string ready to pass to ``agent.run()``.
@@ -280,6 +299,14 @@ class AgentService:
                 profile_context=profile_context.strip(),
             )
 
+        if conversation_context and conversation_context.strip():
+            prompt += _CONVERSATION_CONTEXT_SECTION.format(
+                conversation_context=conversation_context.strip(),
+            )
+
+        if not has_artwork:
+            prompt += _NO_ARTWORK_SCORING_SECTION
+
         if past_critiques and past_critiques.strip():
             prompt += _PAST_CRITIQUES_SECTION.format(past_critiques=past_critiques.strip())
 
@@ -292,6 +319,8 @@ class AgentService:
         user_input: str | None = None,
         past_critiques: str | None = None,
         profile_context: str | None = None,
+        conversation_context: str | None = None,
+        has_artwork: bool = True,
     ) -> AnalysisResponse:
         """
         Analyze an artwork request using Gemini (multimodal: image and/or text).
@@ -309,6 +338,9 @@ class AgentService:
             past_critiques: Optional string of previous critiques to inform the analysis.
             profile_context: Optional textual summary of the user profile used
                 to personalise the critique (goals, preferences, artists, level).
+            conversation_context: Optional short-term thread context injected from
+                recent user/assistant turns.
+            has_artwork: True when an image is provided in the request.
 
         Returns:
             AnalysisResponse: Structured analysis with summary, score, errors, and advice.
@@ -319,7 +351,13 @@ class AgentService:
         try:
             self._search_calls_used = 0
             # Create user prompt
-            prompt = self._build_prompt(user_input, past_critiques, profile_context)
+            prompt = self._build_prompt(
+                user_input,
+                past_critiques,
+                profile_context,
+                conversation_context,
+                has_artwork,
+            )
             message: list = [prompt]
             if image_bytes is not None:
                 message.append(

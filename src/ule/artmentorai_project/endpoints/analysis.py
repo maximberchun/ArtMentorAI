@@ -10,7 +10,7 @@ This module provides REST endpoints for:
 from collections.abc import Awaitable, Callable
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from ..config import AppConfig
@@ -18,6 +18,8 @@ from ..db import create_sync_supabase_service_client
 from ..exceptions import AIServiceError
 from ..models import AnalysisResponse, AuthUser, UserProfile
 from ..repositories import (
+    ConversationMessageRepository,
+    ConversationRepository,
     CritiqueRepository,
     ImageAssetRepository,
     ProgressSnapshotRepository,
@@ -28,6 +30,7 @@ from ..repositories.vector_sync_job_repository import ENTITY_CRITIQUE, OP_UPSERT
 from ..services import AgentService, ProfileService, StorageService
 from ..services.auth_service import AuthService
 from ..services.vector_service import ArtCritique, VectorService
+from ..models.db_rows import ConversationMessageRow
 from ..utils.upload_validation import (
     validate_file_size,
     validate_image_content_type,
@@ -132,6 +135,33 @@ def _merge_memory_context(
     return '\n\n'.join(sections) if sections else None
 
 
+def _format_conversation_messages_for_prompt(messages: list[ConversationMessageRow]) -> str | None:
+    """Format recent conversation turns for prompt injection."""
+    if not messages:
+        return None
+
+    role_labels = {'user': 'User', 'assistant': 'Assistant', 'system': 'System'}
+    lines: list[str] = []
+    for message in reversed(messages):
+        normalized = ' '.join(message.content.split())
+        if not normalized:
+            continue
+        label = role_labels.get(message.role, message.role.title())
+        lines.append(f'- {label}: {normalized[:800]}')
+    return '\n'.join(lines) or None
+
+
+def _build_assistant_conversation_message(analysis: AnalysisResponse) -> str:
+    """Store a compact assistant turn for short-term conversation memory."""
+    top_errors = ', '.join(str(item) for item in analysis.technical_errors[:3]) or 'none listed'
+    return (
+        f'Summary: {analysis.summary}\n'
+        f'Score: {analysis.score}/10\n'
+        f'Technical errors: {top_errors}\n'
+        f'Advice: {analysis.constructive_advice}'
+    )
+
+
 def _require_at_least_one_input(
     file: UploadFile | None,
     user_input: str | None,
@@ -213,6 +243,10 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
         user_input: Annotated[
             str | None,
             Form(description='Optional user comments about their work.'),
+        ] = None,
+        conversation_id: Annotated[
+            str | None,
+            Form(description='Optional conversation thread id for short-term memory context.'),
         ] = None,
     ) -> AnalysisResponse:
         """
@@ -303,6 +337,44 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
 
             past_critiques_str: str | None = None
             portfolio_context_str: str | None = None
+            conversation_context_str: str | None = None
+            active_conversation_id = (
+                conversation_id.strip() if conversation_id and conversation_id.strip() else None
+            )
+            if active_conversation_id:
+                try:
+                    sb_for_conversation = create_sync_supabase_service_client(config)
+                    conversation_repo = ConversationRepository(sb_for_conversation, config.logger)
+                    conversation_message_repo = ConversationMessageRepository(
+                        sb_for_conversation,
+                        config.logger,
+                    )
+                    conversation = conversation_repo.get_active_for_user(
+                        active_conversation_id,
+                        user.user_id,
+                    )
+                    if conversation is None:
+                        raise HTTPException(
+                            status_code=status.HTTP_404_NOT_FOUND,
+                            detail='Conversation not found.',
+                        )
+                    recent_messages = conversation_message_repo.list_recent_for_conversation(
+                        conversation_id=active_conversation_id,
+                        user_id=user.user_id,
+                        limit=8,
+                    )
+                    conversation_context_str = _format_conversation_messages_for_prompt(
+                        recent_messages
+                    )
+                except RuntimeError as conversation_error:
+                    config.logger.warning(
+                        'Conversation lookup failed for user_id=%s conversation_id=%s: %s. '
+                        'Proceeding without short-term conversation memory.',
+                        user.user_id,
+                        active_conversation_id,
+                        str(conversation_error),
+                    )
+
             if vector_service is not None:
                 try:
                     # Use the user's own comment as the semantic query when
@@ -396,10 +468,14 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                     portfolio_context=portfolio_context_str,
                 ),
                 profile_context=profile_context_str,
+                conversation_context=conversation_context_str,
+                has_artwork=image_bytes is not None,
             )
 
             # Persist critique - Postgres + async Qdrant sync
             analysis_result = AnalysisResponse(**result) if isinstance(result, dict) else result
+            if image_bytes is None:
+                analysis_result.score = None
 
             synced_via_pg = False
             try:
@@ -426,38 +502,66 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                     constructive_advice=analysis_result.constructive_advice,
                     tags=[],
                     goals_snapshot=profile_context_str,
+                    conversation_id=active_conversation_id,
                     image_asset_id=image_asset_id,
                     artwork_filename=artwork_filename,
                 )
-                try:
-                    dimension_scores = {
-                        'overall_score_1_to_10': analysis_result.score,
-                        'technical_error_count': len(analysis_result.technical_errors),
-                    }
-                    ProgressSnapshotRepository(sb, config.logger).create(
+                if active_conversation_id:
+                    msg_repo = ConversationMessageRepository(sb, config.logger)
+                    user_message = (
+                        user_input.strip()
+                        if user_input and user_input.strip()
+                        else 'Please critique the uploaded artwork.'
+                    )
+                    msg_repo.create(
+                        conversation_id=active_conversation_id,
                         user_id=user.user_id,
+                        role='user',
+                        content=user_message,
                         critique_id=row.id,
-                        rubric_key='critique_quality',
-                        rubric_version='1.0',
-                        dimension_scores=dimension_scores,
-                        aggregate_score=float(analysis_result.score),
-                        narrative=analysis_result.summary,
                     )
-                    UserProgressRepository(sb, config.logger).upsert_after_critique(
+                    msg_repo.create(
+                        conversation_id=active_conversation_id,
                         user_id=user.user_id,
-                        score=analysis_result.score,
+                        role='assistant',
+                        content=_build_assistant_conversation_message(analysis_result),
+                        critique_id=row.id,
                     )
-                except RuntimeError as progress_error:
-                    config.logger.warning(
-                        'Progress persistence skipped for user_id=%s: %s',
-                        user.user_id,
-                        str(progress_error),
+                if analysis_result.score is not None:
+                    try:
+                        dimension_scores = {
+                            'overall_score_1_to_10': analysis_result.score,
+                            'technical_error_count': len(analysis_result.technical_errors),
+                        }
+                        ProgressSnapshotRepository(sb, config.logger).create(
+                            user_id=user.user_id,
+                            critique_id=row.id,
+                            rubric_key='critique_quality',
+                            rubric_version='1.0',
+                            dimension_scores=dimension_scores,
+                            aggregate_score=float(analysis_result.score),
+                            narrative=analysis_result.summary,
+                        )
+                        UserProgressRepository(sb, config.logger).upsert_after_critique(
+                            user_id=user.user_id,
+                            score=analysis_result.score,
+                        )
+                    except RuntimeError as progress_error:
+                        config.logger.warning(
+                            'Progress persistence skipped for user_id=%s: %s',
+                            user.user_id,
+                            str(progress_error),
+                        )
+                    VectorSyncJobRepository(sb, config.logger).enqueue(
+                        ENTITY_CRITIQUE,
+                        row.id,
+                        OP_UPSERT,
                     )
-                VectorSyncJobRepository(sb, config.logger).enqueue(
-                    ENTITY_CRITIQUE,
-                    row.id,
-                    OP_UPSERT,
-                )
+                else:
+                    config.logger.debug(
+                        'Skipping progress and vector sync for unscored text-only critique id=%s',
+                        row.id,
+                    )
                 synced_via_pg = True
                 config.logger.info(
                     'Critique persisted to Postgres and queued for Qdrant: id=%s user_id=%s',
@@ -470,7 +574,11 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                     str(persist_error),
                 )
 
-            if not synced_via_pg and vector_service is not None:
+            if (
+                not synced_via_pg
+                and vector_service is not None
+                and analysis_result.score is not None
+            ):
                 try:
                     config.logger.debug('Fallback: store critique directly in Qdrant')
                     artwork_filename = (file.filename if file is not None else None) or 'unknown'
@@ -524,6 +632,75 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f'Error analyzing image: {e!s}',
             ) from e
+
+    @router.get(
+        '/conversations/{conversation_id}/messages',
+        summary='Get recent conversation messages',
+        description='Return recent user and assistant turns for one conversation',
+    )
+    async def get_conversation_messages(
+        conversation_id: str,
+        user: Annotated[AuthUser, Depends(current_user)],
+    ) -> list[dict[str, str | None]]:
+        """Load recent messages for a user conversation thread."""
+        try:
+            sb = create_sync_supabase_service_client(config)
+            conversation_repo = ConversationRepository(sb, config.logger)
+            message_repo = ConversationMessageRepository(sb, config.logger)
+            conversation = conversation_repo.get_active_for_user(conversation_id, user.user_id)
+            if conversation is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail='Conversation not found.',
+                )
+            rows = message_repo.list_recent_for_conversation(
+                conversation_id=conversation_id,
+                user_id=user.user_id,
+                limit=20,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f'Failed to load conversation messages: {exc!s}',
+            ) from exc
+
+        return [
+            {
+                'id': row.id,
+                'role': row.role,
+                'content': row.content,
+                'created_at': row.created_at.isoformat() if row.created_at else None,
+            }
+            for row in reversed(rows)
+        ]
+
+    @router.post(
+        '/conversations',
+        summary='Create conversation',
+        description='Create a new conversation thread for critique continuity',
+    )
+    async def create_conversation(
+        user: Annotated[AuthUser, Depends(current_user)],
+        title: Annotated[str | None, Body(embed=True)] = None,
+    ) -> dict[str, str | None]:
+        """Create a conversation row and return basic metadata."""
+        try:
+            sb = create_sync_supabase_service_client(config)
+            row = ConversationRepository(sb, config.logger).create(
+                user_id=user.user_id,
+                title=title.strip() if title and title.strip() else None,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f'Failed to create conversation: {exc!s}',
+            ) from exc
+
+        return {
+            'id': row.id,
+            'title': row.title,
+            'created_at': row.created_at.isoformat() if row.created_at else None,
+        }
 
     @router.get(
         '/health',

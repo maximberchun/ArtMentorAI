@@ -15,7 +15,12 @@ class AnalysisResponse(BaseModel):
 
     summary: str = Field(..., min_length=10, description='General summary of the artwork analysis')
 
-    score: int = Field(..., ge=1, le=10, description='Score from 1 (beginner) to 10 (mastery)')
+    score: int | None = Field(
+        default=None,
+        ge=1,
+        le=10,
+        description='Score from 1 (beginner) to 10 (mastery). Null when no artwork was uploaded.',
+    )
 
     technical_errors: list[str] = Field(
         default=[],

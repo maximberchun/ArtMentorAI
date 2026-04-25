@@ -16,9 +16,22 @@ export type UserProfile = {
 
 export type AnalysisResponse = {
   summary: string
-  score: number
+  score: number | null
   technical_errors: string[]
   constructive_advice: string
+}
+
+export type ConversationInfo = {
+  id: string
+  title: string | null
+  created_at: string | null
+}
+
+export type ConversationMessage = {
+  id: string
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  created_at: string | null
 }
 
 export type PortfolioHistoryItem = {

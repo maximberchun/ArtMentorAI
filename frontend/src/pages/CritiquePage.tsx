@@ -1,13 +1,48 @@
 import { FormEvent, useState } from 'react'
-import { apiFetch } from '../lib/api'
-import { AnalysisResponse } from '../types/api'
+import { apiFetch, apiJson } from '../lib/api'
+import { AnalysisResponse, ConversationInfo, ConversationMessage } from '../types/api'
 
 export function CritiquePage() {
   const [userInput, setUserInput] = useState('')
   const [file, setFile] = useState<File | null>(null)
   const [busy, setBusy] = useState(false)
+  const [creatingConversation, setCreatingConversation] = useState(false)
+  const [loadingMessages, setLoadingMessages] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<AnalysisResponse | null>(null)
+  const [conversation, setConversation] = useState<ConversationInfo | null>(null)
+  const [messages, setMessages] = useState<ConversationMessage[]>([])
+
+  async function createConversation() {
+    setCreatingConversation(true)
+    setError(null)
+    try {
+      const created = await apiJson<ConversationInfo>('/analysis/conversations', {
+        method: 'POST',
+        body: JSON.stringify({}),
+      })
+      setConversation(created)
+      setMessages([])
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create conversation.')
+    } finally {
+      setCreatingConversation(false)
+    }
+  }
+
+  async function refreshConversationMessages(conversationId: string) {
+    setLoadingMessages(true)
+    try {
+      const data = await apiJson<ConversationMessage[]>(
+        `/analysis/conversations/${conversationId}/messages`
+      )
+      setMessages(data)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load conversation messages.')
+    } finally {
+      setLoadingMessages(false)
+    }
+  }
 
   async function submitCritique(e: FormEvent) {
     e.preventDefault()
@@ -23,12 +58,16 @@ export function CritiquePage() {
       const formData = new FormData()
       if (file) formData.append('file', file)
       if (userInput.trim()) formData.append('user_input', userInput)
+      if (conversation?.id) formData.append('conversation_id', conversation.id)
       const response = await apiFetch('/analysis/critique', {
         method: 'POST',
         body: formData,
       })
       const data = (await response.json()) as AnalysisResponse
       setResult(data)
+      if (conversation?.id) {
+        await refreshConversationMessages(conversation.id)
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Critique failed.')
     } finally {
@@ -39,6 +78,36 @@ export function CritiquePage() {
   return (
     <section className="space-y-4 rounded border border-stone-200 bg-white p-4 shadow-sm">
       <h2 className="text-lg font-semibold">Critique</h2>
+      <div className="rounded border border-stone-200 bg-stone-50 p-3 text-sm">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void createConversation()}
+            disabled={creatingConversation}
+            className="rounded bg-stone-700 px-3 py-1.5 text-xs text-white disabled:opacity-50"
+          >
+            {creatingConversation ? 'Starting...' : 'Start conversation'}
+          </button>
+          {conversation && (
+            <>
+              <span className="text-stone-700">Thread: {conversation.id}</span>
+              <button
+                type="button"
+                onClick={() => void refreshConversationMessages(conversation.id)}
+                disabled={loadingMessages}
+                className="rounded border border-stone-300 bg-white px-2 py-1 text-xs text-stone-700 disabled:opacity-50"
+              >
+                {loadingMessages ? 'Refreshing...' : 'Refresh messages'}
+              </button>
+            </>
+          )}
+        </div>
+        {!conversation && (
+          <p className="mt-2 text-xs text-stone-600">
+            Start a conversation to keep short-term context between critiques.
+          </p>
+        )}
+      </div>
       <form className="space-y-3" onSubmit={submitCritique}>
         <input
           className="w-full rounded border border-stone-300 px-3 py-2 text-sm"
@@ -63,7 +132,11 @@ export function CritiquePage() {
       {error && <p className="text-sm text-red-700">{error}</p>}
       {result && (
         <div className="rounded border border-stone-200 bg-stone-50 p-3 text-sm">
-          <p className="font-medium">Score: {result.score}/10</p>
+          {result.score === null ? (
+            <p className="font-medium text-stone-600">No score (text-only critique)</p>
+          ) : (
+            <p className="font-medium">Score: {result.score}/10</p>
+          )}
           <p className="mt-1">{result.summary}</p>
           {result.technical_errors.length > 0 && (
             <ul className="mt-2 list-disc pl-5">
@@ -73,6 +146,25 @@ export function CritiquePage() {
             </ul>
           )}
           <p className="mt-2 text-stone-700">{result.constructive_advice}</p>
+        </div>
+      )}
+      {conversation && (
+        <div className="rounded border border-stone-200 bg-white p-3 text-sm">
+          <h3 className="font-medium">Conversation</h3>
+          {messages.length === 0 ? (
+            <p className="mt-2 text-stone-600">No messages yet.</p>
+          ) : (
+            <div className="mt-2 space-y-2">
+              {messages.map((message) => (
+                <div key={message.id} className="rounded border border-stone-200 bg-stone-50 p-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-stone-600">
+                    {message.role}
+                  </p>
+                  <p className="mt-1 whitespace-pre-wrap">{message.content}</p>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </section>
