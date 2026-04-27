@@ -1,12 +1,13 @@
 """Supabase Storage service for artwork files."""
 
 import logging  # noqa: F401
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from supabase import Client, create_client
-
 from ..config import AppConfig
+
+if TYPE_CHECKING:
+    from supabase import Client
 
 
 class StorageService:
@@ -21,6 +22,14 @@ class StorageService:
             raise RuntimeError(msg)
 
         self._bucket = config.supabase.storage_bucket
+        try:
+            from supabase import create_client
+        except ImportError as exc:
+            msg = (
+                'Installed supabase package does not expose sync factory `create_client`. '
+                'Please install a compatible supabase-py version.'
+            )
+            raise RuntimeError(msg) from exc
         self._client: Client = create_client(
             config.supabase.url,
             config.supabase.service_role_key,

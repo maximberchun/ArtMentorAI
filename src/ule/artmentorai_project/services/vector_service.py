@@ -12,7 +12,18 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from fastembed.embedding import FlagEmbedding
+try:
+    from fastembed.embedding import FlagEmbedding
+except ModuleNotFoundError:  # pragma: no cover - depends on runtime environment
+    class FlagEmbedding:  # type: ignore[no-redef]
+        """Fallback placeholder when fastembed is unavailable."""
+
+        def __init__(self, *args, **kwargs) -> None:  # noqa: D401, ANN002, ANN003
+            msg = (
+                'fastembed is not installed. Install project dependencies to enable '
+                'VectorService embedding generation.'
+            )
+            raise RuntimeError(msg)
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
