@@ -10,6 +10,8 @@ jobs:
   backend-tests:
     name: Backend pytest
     runs-on: ubuntu-latest
+    env:
+      BACKEND_COVERAGE_MIN: "35"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -26,7 +28,7 @@ jobs:
         run: uv sync --extra test
 
       - name: Run backend tests
-        run: uv run pytest --cov-fail-under=0
+        run: uv run pytest --cov-fail-under=${BACKEND_COVERAGE_MIN}
 
   frontend-tests:
     name: Frontend vitest
@@ -55,6 +57,9 @@ jobs:
     name: Backend coverage report (non-blocking)
     runs-on: ubuntu-latest
     continue-on-error: true
+    env:
+      # Keep report job aligned with the phased backend gate.
+      BACKEND_COVERAGE_MIN: "35"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -71,7 +76,7 @@ jobs:
         run: uv sync --extra test
 
       - name: Run backend tests with default coverage gate
-        run: uv run pytest --cov-fail-under=0
+        run: uv run pytest --cov-fail-under=${BACKEND_COVERAGE_MIN}
 
       - name: Upload backend coverage artifacts
         if: always()
