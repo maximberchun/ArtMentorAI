@@ -1,8 +1,6 @@
 """Response models for artwork analysis."""
 
-from typing import ClassVar
-
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class AnalysisResponse(BaseModel):
@@ -23,9 +21,9 @@ class AnalysisResponse(BaseModel):
     )
 
     technical_errors: list[str] = Field(
-        default=[],
-        min_items=0,
-        max_items=10,
+        default_factory=list,
+        min_length=0,
+        max_length=10,
         description='List of identified technical errors (anatomy, perspective, etc.)',
     )
 
@@ -36,10 +34,8 @@ class AnalysisResponse(BaseModel):
         description='Practical and constructive advice for improvement',
     )
 
-    class Config:
-        """Pydantic configuration for the AnalysisResponse model."""
-
-        json_schema_extra: ClassVar = {
+    model_config = ConfigDict(
+        json_schema_extra={
             'example': {
                 'summary': 'Figure drawing with good proportions but perspective errors',
                 'score': 7,
@@ -53,3 +49,4 @@ class AnalysisResponse(BaseModel):
                 ),
             }
         }
+    )

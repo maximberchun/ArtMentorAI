@@ -180,7 +180,7 @@ def _require_at_least_one_input(
     """
     if file is None and not (user_input and user_input.strip()):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail='Provide at least an image, a text comment, or both.',
         )
 
