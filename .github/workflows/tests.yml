@@ -47,7 +47,7 @@ jobs:
         run: npm ci
 
       - name: Run frontend tests
-        run: npm run test
+        run: npm run test:ci
 
   backend-coverage-report:
     name: Backend coverage report (non-blocking)
