@@ -8,6 +8,9 @@ type RequireAuthProps = {
 }
 
 export function RequireAuth({ session, children }: RequireAuthProps) {
-  if (!session) return <Navigate to="/sign-in" replace />
+  const nowInSeconds = Math.floor(Date.now() / 1000)
+  const isExpired = typeof session?.expires_at === 'number' && session.expires_at <= nowInSeconds
+
+  if (!session || isExpired) return <Navigate to="/sign-in" replace />
   return <>{children}</>
 }
