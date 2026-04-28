@@ -48,3 +48,36 @@ jobs:
 
       - name: Run frontend tests
         run: npm run test
+
+  backend-coverage-report:
+    name: Backend coverage report (non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install backend dependencies
+        run: uv sync --extra test
+
+      - name: Run backend tests with default coverage gate
+        run: uv run pytest
+
+      - name: Upload backend coverage artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage-artifacts
+          path: |
+            reports/coverage.lcov
+            reports/coverage_html_report
+            reports/junit/tests.xml
+          if-no-files-found: warn
