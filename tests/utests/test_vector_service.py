@@ -25,11 +25,18 @@ class _FakeEmbeddingModel:
 class _FakeQdrantClient:
     def __init__(self) -> None:
         self.last_upsert_payload = None
+        self.last_delete_payload = None
 
     def upsert(self, *, collection_name: str, points: list) -> None:
         self.last_upsert_payload = {
             'collection_name': collection_name,
             'points': points,
+        }
+
+    def delete(self, *, collection_name: str, points_selector) -> None:
+        self.last_delete_payload = {
+            'collection_name': collection_name,
+            'points_selector': points_selector,
         }
 
 
@@ -118,3 +125,31 @@ def test_save_critique_wraps_unexpected_client_failures() -> None:
             filename='perspective.png',
             user_id='user-2',
         )
+
+
+def test_save_portfolio_items_returns_empty_for_empty_input() -> None:
+    """Bulk save should be a no-op when no items are provided."""
+    service = _build_service()
+
+    assert service.save_portfolio_items(user_id='user-1', items=[]) == []
+    assert service.client.last_upsert_payload is None
+
+
+def test_delete_points_by_ids_skips_empty_and_normalizes_numeric() -> None:
+    """Delete should ignore blank ids and convert numeric ids to integers."""
+    service = _build_service()
+
+    service.delete_points_by_ids(['', '42', 'abc'])
+
+    assert service.client.last_delete_payload is not None
+    payload = service.client.last_delete_payload
+    assert payload['collection_name'] == 'test_collection'
+    assert payload['points_selector'].points == [42, 'abc']
+
+
+def test_search_user_history_rejects_invalid_type_filter() -> None:
+    """Unsupported history type filters should raise a clear validation error."""
+    service = _build_service()
+
+    with pytest.raises(ValueError, match='Invalid type filter'):
+        service.search_user_history(user_id='user-1', type_filter='invalid-type')
