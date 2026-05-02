@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .analysis_response import TargetedDrill
 
@@ -34,6 +34,16 @@ class PortfolioHistoryItem(BaseModel):
         ...,
         description='Payload discriminator: critique or portfolio_item.',
     )
+
+    @field_validator('prioritized_issues', mode='before')
+    @classmethod
+    def _normalize_prioritized_issues(cls, v):
+        if not isinstance(v, list):
+            return v
+        return [
+            item if isinstance(item, dict) else {'title': item, 'diagnosis': None, 'priority': None}
+            for item in v
+        ]
 
     user_id: str = Field(..., description='Owner user id.')
     filename: str | None = Field(None, description='Original filename (if provided).')
