@@ -63,6 +63,18 @@ def _critique_from_row(row: CritiqueRow) -> ArtCritique:
         prioritized_issues=_issue_titles_as_str_list(row.prioritized_issues),
         readiness_gate=row.readiness_gate,
         drill_notes=_targeted_drills_to_notes(row.targeted_drills),
+        rubric_anchors=[str(item) for item in row.rubric_anchors if isinstance(item, str)],
+        root_causes=[str(item) for item in row.root_causes if isinstance(item, str)],
+        targeted_drills=[
+            {
+                'name': str(item.get('name', '')).strip(),
+                'objective': str(item.get('objective', '')).strip(),
+                'success_check': str(item.get('success_check', '')).strip(),
+            }
+            for item in row.targeted_drills
+            if isinstance(item, dict)
+        ],
+        confidence=row.confidence,
         tags=row.tags,
         goals_snapshot=row.goals_snapshot,
     )

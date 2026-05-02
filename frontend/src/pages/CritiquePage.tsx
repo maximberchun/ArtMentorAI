@@ -159,6 +159,16 @@ export function CritiquePage() {
                 ))}
             </div>
           )}
+          {result.root_causes.length > 0 && (
+            <div className="mt-3">
+              <p className="font-medium">Root causes</p>
+              <ul className="mt-1 list-disc space-y-1 pl-5">
+                {result.root_causes.map((cause) => (
+                  <li key={cause}>{cause}</li>
+                ))}
+              </ul>
+            </div>
+          )}
           {result.targeted_drills.length > 0 && (
             <div className="mt-3">
               <p className="font-medium">Targeted drills</p>

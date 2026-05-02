@@ -70,6 +70,10 @@ class ArtCritique:
         readiness_gate: str,
         drill_notes: str,
         *,
+        rubric_anchors: list[str] | None = None,
+        root_causes: list[str] | None = None,
+        targeted_drills: list[dict[str, str]] | None = None,
+        confidence: float | None = None,
         tags: list[str] | None = None,
         goals_snapshot: str | None = None,
     ) -> None:
@@ -81,6 +85,10 @@ class ArtCritique:
             prioritized_issues: List of prioritized issue titles
             readiness_gate: Readiness gate statement
             drill_notes: Flattened targeted drill recommendations
+            rubric_anchors: Optional rubric anchors that justify the score
+            root_causes: Optional root-cause statements for observed issues
+            targeted_drills: Optional structured targeted drills
+            confidence: Optional critique confidence from 0.0 to 1.0
             tags: Optional tags (style, medium, subject, etc.)
             goals_snapshot: Optional short text snapshot of user goals at time of critique
         """
@@ -89,6 +97,10 @@ class ArtCritique:
         self.prioritized_issues = prioritized_issues
         self.readiness_gate = readiness_gate
         self.drill_notes = drill_notes
+        self.rubric_anchors = rubric_anchors or []
+        self.root_causes = root_causes or []
+        self.targeted_drills = targeted_drills or []
+        self.confidence = confidence
         self.tags = tags or []
         self.goals_snapshot = goals_snapshot
         self.timestamp = datetime.now(tz=UTC).isoformat()
@@ -115,6 +127,12 @@ class ArtCritique:
             'score': self.score,
             'summary': self.summary,
             'advice': f'{self.drill_notes} Gate: {self.readiness_gate}'.strip(),
+            'rubric_anchors': self.rubric_anchors,
+            'prioritized_issues': self.prioritized_issues,
+            'root_causes': self.root_causes,
+            'targeted_drills': self.targeted_drills,
+            'readiness_gate': self.readiness_gate,
+            'confidence': self.confidence,
             'timestamp': self.timestamp,
             'tags': self.tags,
             'goals_snapshot': self.goals_snapshot or '',
@@ -155,6 +173,17 @@ class ArtCritique:
                 f'{item.name}: {item.objective}. Check: {item.success_check}.'
                 for item in response.targeted_drills[:2]
             ),
+            rubric_anchors=list(response.rubric_anchors),
+            root_causes=list(response.root_causes),
+            targeted_drills=[
+                {
+                    'name': item.name,
+                    'objective': item.objective,
+                    'success_check': item.success_check,
+                }
+                for item in response.targeted_drills
+            ],
+            confidence=response.confidence,
             tags=tags,
             goals_snapshot=goals_snapshot,
         )

@@ -34,6 +34,80 @@ export function HistoryPage() {
     void loadHistory()
   }, [loadHistory])
 
+  function renderCritiqueDetails(item: PortfolioHistoryItem) {
+    const orderedIssues = item.prioritized_issues
+      .slice()
+      .sort((a, b) => (a.priority ?? Number.MAX_SAFE_INTEGER) - (b.priority ?? Number.MAX_SAFE_INTEGER))
+
+    return (
+      <div className="mt-3 space-y-3">
+        {item.rubric_anchors.length > 0 && (
+          <div>
+            <p className="font-medium text-stone-800">Rubric anchors</p>
+            <ul className="mt-1 list-disc pl-5 text-stone-700">
+              {item.rubric_anchors.map((anchor) => (
+                <li key={anchor}>{anchor}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {orderedIssues.length > 0 && (
+          <div>
+            <p className="font-medium text-stone-800">Priority order</p>
+            <div className="mt-2 space-y-2">
+              {orderedIssues.map((issue, index) => (
+                <div key={`${issue.title}-${issue.priority ?? index}`}>
+                  <p className="font-medium text-stone-800">
+                    {issue.priority ?? index + 1}. {issue.title}
+                  </p>
+                  {issue.diagnosis && <p className="text-stone-700">{issue.diagnosis}</p>}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {item.root_causes.length > 0 && (
+          <div>
+            <p className="font-medium text-stone-800">Root causes</p>
+            <ul className="mt-1 list-disc pl-5 text-stone-700">
+              {item.root_causes.map((cause) => (
+                <li key={cause}>{cause}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {item.targeted_drills.length > 0 && (
+          <div>
+            <p className="font-medium text-stone-800">Targeted drills</p>
+            <ul className="mt-1 list-disc space-y-1 pl-5 text-stone-700">
+              {item.targeted_drills.map((drill) => (
+                <li key={drill.name}>
+                  <span className="font-medium">{drill.name}:</span> {drill.objective} (Check:{' '}
+                  {drill.success_check})
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {item.readiness_gate && (
+          <p className="text-stone-700">
+            <span className="font-medium text-stone-800">Readiness gate:</span> {item.readiness_gate}
+          </p>
+        )}
+
+        {item.confidence !== null && (
+          <p className="text-xs text-stone-500">
+            Confidence: {(item.confidence * 100).toFixed(0)}%
+          </p>
+        )}
+      </div>
+    )
+  }
+
   return (
     <section className="space-y-4">
       <div className="rounded border border-stone-200 bg-white p-4 shadow-sm">
@@ -87,6 +161,7 @@ export function HistoryPage() {
             {item.advice && <p className="mt-2 text-stone-700">{item.advice}</p>}
             {item.score !== null && <p className="mt-2 text-xs">Score: {item.score}/10</p>}
             {item.tags.length > 0 && <p className="mt-1 text-xs text-stone-600">Tags: {item.tags.join(', ')}</p>}
+            {item.type === 'critique' && renderCritiqueDetails(item)}
           </article>
         ))}
         {!busy && !error && items.length === 0 && (

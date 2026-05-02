@@ -14,6 +14,8 @@ class ProgressSnapshotSummary(BaseModel):
     critique_id: str | None = None
     rubric_key: str
     aggregate_score: float | None = None
+    dimension_scores: dict[str, float | int | str | None] = Field(default_factory=dict)
+    narrative: str | None = None
     created_at: datetime | None = None
 
 

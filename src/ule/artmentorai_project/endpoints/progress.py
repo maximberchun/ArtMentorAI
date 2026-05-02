@@ -72,6 +72,8 @@ def create_progress_router(config: AppConfig) -> APIRouter:
                 critique_id=row.critique_id,
                 rubric_key=row.rubric_key,
                 aggregate_score=row.aggregate_score,
+                dimension_scores=getattr(row, 'dimension_scores', {}) or {},
+                narrative=getattr(row, 'narrative', None),
                 created_at=row.created_at,
             )
             for row in snapshots

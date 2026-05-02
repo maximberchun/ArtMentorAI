@@ -80,6 +80,18 @@ export function ProgressPage() {
                     <p className="mt-1 text-xs text-stone-500">
                       {snapshot.created_at ? new Date(snapshot.created_at).toLocaleString() : 'Unknown date'}
                     </p>
+                    {snapshot.narrative && (
+                      <p className="mt-2 text-sm text-stone-700">{snapshot.narrative}</p>
+                    )}
+                    {Object.keys(snapshot.dimension_scores).length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-2 text-xs text-stone-600">
+                        {Object.entries(snapshot.dimension_scores).map(([key, value]) => (
+                          <span key={key} className="rounded bg-white px-2 py-1">
+                            {key}: {String(value)}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </li>
                 ))}
               </ul>

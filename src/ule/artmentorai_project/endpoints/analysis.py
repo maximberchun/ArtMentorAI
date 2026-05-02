@@ -156,8 +156,9 @@ def _build_assistant_conversation_message(analysis: AnalysisResponse) -> str:
     top_issues = ', '.join(item.title for item in analysis.prioritized_issues[:3]) or 'none listed'
     top_gate = analysis.readiness_gate or 'none'
     first_drill = analysis.targeted_drills[0].name if analysis.targeted_drills else 'none'
+    score_label = f'{analysis.score}/10' if analysis.score is not None else 'unscored'
     return (
-        f'Score: {analysis.score}/10\n'
+        f'Score: {score_label}\n'
         f'Prioritized issues: {top_issues}\n'
         f'Readiness gate: {top_gate}\n'
         f'First drill: {first_drill}'
@@ -573,6 +574,9 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                         dimension_scores = {
                             'overall_score_1_to_10': analysis_result.score,
                             'prioritized_issue_count': len(analysis_result.prioritized_issues),
+                            'root_cause_count': len(analysis_result.root_causes),
+                            'targeted_drill_count': len(analysis_result.targeted_drills),
+                            'confidence_percent': round(analysis_result.confidence * 100),
                         }
                         ProgressSnapshotRepository(sb, config.logger).create(
                             user_id=user.user_id,
@@ -581,7 +585,10 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                             rubric_version='1.0',
                             dimension_scores=dimension_scores,
                             aggregate_score=float(analysis_result.score),
-                            narrative=_build_persistence_summary(analysis_result),
+                            narrative=(
+                                f'{_build_persistence_summary(analysis_result)} '
+                                f'Next: {_build_persistence_advice(analysis_result)}'
+                            ).strip(),
                         )
                         UserProgressRepository(sb, config.logger).upsert_after_critique(
                             user_id=user.user_id,

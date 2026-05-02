@@ -4,6 +4,16 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from .analysis_response import TargetedDrill
+
+
+class PortfolioPrioritizedIssue(BaseModel):
+    """Structured critique issue returned in history payloads."""
+
+    title: str
+    diagnosis: str | None = None
+    priority: int | None = None
+
 
 class PortfolioUploadResponse(BaseModel):
     """Response for POST /portfolio/upload."""
@@ -49,6 +59,32 @@ class PortfolioHistoryItem(BaseModel):
     score: int | None = Field(None, ge=1, le=10, description='Critique score (1-10).')
     summary: str | None = Field(None, description='Critique summary.')
     advice: str | None = Field(None, description='Critique advice.')
+    rubric_anchors: list[str] = Field(
+        default_factory=list,
+        description='Rubric anchors that justify the critique score.',
+    )
+    prioritized_issues: list[PortfolioPrioritizedIssue] = Field(
+        default_factory=list,
+        description='Ordered critique issues when this history item is a critique.',
+    )
+    root_causes: list[str] = Field(
+        default_factory=list,
+        description='Underlying causes captured for this critique.',
+    )
+    targeted_drills: list[TargetedDrill] = Field(
+        default_factory=list,
+        description='Structured drills captured for this critique.',
+    )
+    readiness_gate: str | None = Field(
+        None,
+        description='Foundational gate to meet before advancing to harder topics.',
+    )
+    confidence: float | None = Field(
+        None,
+        ge=0.0,
+        le=1.0,
+        description='Model confidence for the critique.',
+    )
     goals_snapshot: str | None = Field(
         None, description='Compact snapshot of user goals at critique time.'
     )  # noqa: E501

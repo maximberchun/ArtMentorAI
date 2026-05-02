@@ -60,6 +60,12 @@ export type PortfolioHistoryItem = {
   score: number | null
   summary: string | null
   advice: string | null
+  rubric_anchors: string[]
+  prioritized_issues: PrioritizedIssue[]
+  root_causes: string[]
+  targeted_drills: TargetedDrill[]
+  readiness_gate: string | null
+  confidence: number | null
   goals_snapshot: string | null
   level_estimate: number | null
   image_url: string | null
@@ -74,6 +80,8 @@ export type ProgressSnapshotSummary = {
   critique_id: string | null
   rubric_key: string
   aggregate_score: number | null
+  dimension_scores: Record<string, number | string | null>
+  narrative: string | null
   created_at: string | null
 }
 
