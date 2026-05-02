@@ -1,15 +1,6 @@
-import { FormEvent, useState, useRef, useEffect } from 'react'
-import { apiFetch, apiJson } from '../lib/api'
-import { AnalysisResponse, ConversationInfo, ConversationMessage } from '../types/api'
-
-interface ChatMessage {
-  id: string
-  role: 'user' | 'assistant'
-  content: string
-  image?: string
-  timestamp: Date
-  analysis?: AnalysisResponse
-}
+import { FormEvent, useState, useRef } from 'react'
+import { apiFetch } from '../lib/api'
+import { AnalysisResponse } from '../types/api'
 
 export function CritiquePage() {
   const [userInput, setUserInput] = useState('')
@@ -17,25 +8,9 @@ export function CritiquePage() {
   const [preview, setPreview] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [conversation, setConversation] = useState<ConversationInfo | null>(null)
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
+  const [result, setResult] = useState<AnalysisResponse | null>(null)
   const [isDragging, setIsDragging] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const messagesEndRef = useRef<HTMLDivElement>(null)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
-
-  // Auto-scroll to bottom when new messages arrive
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [chatMessages])
-
-  // Auto-resize textarea
-  useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto'
-      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 150)}px`
-    }
-  }, [userInput])
 
   function handleFileChange(selectedFile: File | null) {
     setFile(selectedFile)
@@ -57,410 +32,290 @@ export function CritiquePage() {
     }
   }
 
-  async function ensureConversation(): Promise<string> {
-    if (conversation?.id) return conversation.id
-    
-    try {
-      const created = await apiJson<ConversationInfo>('/analysis/conversations', {
-        method: 'POST',
-        body: JSON.stringify({}),
-      })
-      setConversation(created)
-      return created.id
-    } catch (err) {
-      throw new Error('Failed to create conversation')
-    }
-  }
-
   async function submitCritique(e: FormEvent) {
     e.preventDefault()
-    if (!file && !userInput.trim()) {
-      setError('Please provide an image or a message.')
+    if (!file) {
+      setError('Please upload an image first.')
       return
     }
 
     setBusy(true)
     setError(null)
-
-    // Add user message to chat immediately
-    const userMessage: ChatMessage = {
-      id: `user-${Date.now()}`,
-      role: 'user',
-      content: userInput.trim() || 'Please critique this artwork',
-      image: preview || undefined,
-      timestamp: new Date(),
-    }
-    setChatMessages(prev => [...prev, userMessage])
-
-    // Clear input immediately for better UX
-    const currentInput = userInput
-    const currentFile = file
-    setUserInput('')
-    setFile(null)
-    setPreview(null)
-    if (fileInputRef.current) fileInputRef.current.value = ''
+    setResult(null)
 
     try {
-      const conversationId = await ensureConversation()
-
       const formData = new FormData()
-      if (currentFile) formData.append('file', currentFile)
-      if (currentInput.trim()) formData.append('user_input', currentInput)
-      formData.append('conversation_id', conversationId)
+      formData.append('file', file)
+      if (userInput.trim()) formData.append('user_input', userInput)
 
       const response = await apiFetch('/analysis/critique', {
         method: 'POST',
         body: formData,
       })
       const data = (await response.json()) as AnalysisResponse
-
-      // Add AI response to chat
-      const assistantMessage: ChatMessage = {
-        id: `assistant-${Date.now()}`,
-        role: 'assistant',
-        content: formatCritiqueResponse(data),
-        timestamp: new Date(),
-        analysis: data,
-      }
-      setChatMessages(prev => [...prev, assistantMessage])
+      setResult(data)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Critique failed.')
-      // Remove the optimistic user message if request failed
-      setChatMessages(prev => prev.filter(m => m.id !== userMessage.id))
     } finally {
       setBusy(false)
     }
   }
 
-  function formatCritiqueResponse(data: AnalysisResponse): string {
-    let response = ''
-
-    if (data.score !== null) {
-      response += `**Overall Score: ${data.score}/10**\n\n`
-    }
-
-    if (data.prioritized_issues.length > 0) {
-      response += `**Key Areas for Improvement:**\n`
-      data.prioritized_issues
-        .slice()
-        .sort((a, b) => a.priority - b.priority)
-        .forEach((issue, index) => {
-          response += `${index + 1}. **${issue.title}**: ${issue.diagnosis}\n`
-        })
-      response += '\n'
-    }
-
-    if (data.root_causes.length > 0) {
-      response += `**Root Causes:**\n`
-      data.root_causes.forEach(cause => {
-        response += `- ${cause}\n`
-      })
-      response += '\n'
-    }
-
-    if (data.targeted_drills.length > 0) {
-      response += `**Recommended Practice:**\n`
-      data.targeted_drills.forEach(drill => {
-        response += `- **${drill.name}**: ${drill.objective}\n`
-      })
-      response += '\n'
-    }
-
-    response += `*Readiness: ${data.readiness_gate} | Confidence: ${(data.confidence * 100).toFixed(0)}%*`
-
-    return response
-  }
-
-  function startNewConversation() {
-    setConversation(null)
-    setChatMessages([])
+  function resetForm() {
+    setFile(null)
+    setPreview(null)
+    setUserInput('')
+    setResult(null)
     setError(null)
-  }
-
-  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      if (!busy && (userInput.trim() || file)) {
-        submitCritique(e as unknown as FormEvent)
-      }
-    }
+    if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
   return (
-    <div className="flex h-[calc(100vh-8rem)] flex-col">
+    <div className="space-y-8">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-border pb-4">
-        <div>
-          <h1 className="text-xl font-bold text-foreground">Art Critique</h1>
-          <p className="text-sm text-muted-foreground">
-            {conversation ? `Conversation: ${conversation.id.slice(0, 8)}...` : 'Start a new conversation'}
-          </p>
-        </div>
-        {chatMessages.length > 0 && (
-          <button
-            type="button"
-            onClick={startNewConversation}
-            className="inline-flex items-center gap-2 rounded-lg border border-border bg-secondary px-3 py-2 text-sm font-medium text-secondary-foreground transition-colors hover:bg-border"
-          >
-            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-            </svg>
-            New Chat
-          </button>
-        )}
+      <div className="text-center">
+        <h1 className="text-2xl font-bold text-foreground sm:text-3xl">Get Your Art Critiqued</h1>
+        <p className="mt-2 text-muted-foreground">
+          Upload your artwork and receive detailed AI-powered feedback
+        </p>
       </div>
 
-      {/* Chat Messages */}
-      <div className="flex-1 overflow-y-auto py-4">
-        {chatMessages.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center text-center">
-            <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-              <svg className="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z" />
-              </svg>
-            </div>
-            <h2 className="mb-2 text-lg font-semibold text-foreground">Welcome to Art Critique</h2>
-            <p className="max-w-md text-sm text-muted-foreground">
-              Upload your artwork and I&apos;ll provide detailed feedback on composition, technique, and areas for improvement.
-            </p>
-            <div className="mt-6 grid gap-2 text-left">
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <svg className="h-4 w-4 text-primary" fill="currentColor" viewBox="0 0 8 8">
-                  <circle cx="4" cy="4" r="3" />
-                </svg>
-                Drop an image or use the attachment button
-              </div>
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <svg className="h-4 w-4 text-primary" fill="currentColor" viewBox="0 0 8 8">
-                  <circle cx="4" cy="4" r="3" />
-                </svg>
-                Add context about your goals or specific questions
-              </div>
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <svg className="h-4 w-4 text-primary" fill="currentColor" viewBox="0 0 8 8">
-                  <circle cx="4" cy="4" r="3" />
-                </svg>
-                Continue the conversation for follow-up feedback
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {chatMessages.map((message) => (
-              <div
-                key={message.id}
-                className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
-              >
-                <div
-                  className={`max-w-[85%] rounded-2xl px-4 py-3 ${
-                    message.role === 'user'
-                      ? 'bg-primary text-primary-foreground'
-                      : 'bg-card border border-border'
-                  }`}
-                >
-                  {message.image && (
-                    <img
-                      src={message.image}
-                      alt="Uploaded artwork"
-                      className="mb-3 max-h-64 rounded-lg object-contain"
-                    />
-                  )}
-                  <div className={`text-sm leading-relaxed ${message.role === 'assistant' ? 'prose prose-sm prose-invert max-w-none' : ''}`}>
-                    {message.role === 'assistant' ? (
-                      <FormattedMessage content={message.content} />
-                    ) : (
-                      <p>{message.content}</p>
-                    )}
-                  </div>
-                  <p className={`mt-2 text-xs ${message.role === 'user' ? 'text-primary-foreground/70' : 'text-muted-foreground'}`}>
-                    {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </p>
-                </div>
-              </div>
-            ))}
+      <div className="grid gap-8 lg:grid-cols-2">
+        {/* Upload Section */}
+        <div className="space-y-6">
+          <form onSubmit={submitCritique} className="space-y-6">
+            {/* Dropzone */}
+            <div
+              className={`relative flex min-h-64 cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed transition-all ${
+                isDragging
+                  ? 'border-primary bg-primary/5'
+                  : preview
+                    ? 'border-border bg-card'
+                    : 'border-border bg-card hover:border-primary/50 hover:bg-primary/5'
+              }`}
+              onDragOver={(e) => {
+                e.preventDefault()
+                setIsDragging(true)
+              }}
+              onDragLeave={() => setIsDragging(false)}
+              onDrop={handleDrop}
+              onClick={() => !preview && fileInputRef.current?.click()}
+            >
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(ev) => handleFileChange(ev.target.files?.[0] ?? null)}
+              />
 
-            {busy && (
-              <div className="flex justify-start">
-                <div className="rounded-2xl border border-border bg-card px-4 py-3">
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <div className="flex gap-1">
-                      <span className="h-2 w-2 animate-bounce rounded-full bg-primary" style={{ animationDelay: '0ms' }} />
-                      <span className="h-2 w-2 animate-bounce rounded-full bg-primary" style={{ animationDelay: '150ms' }} />
-                      <span className="h-2 w-2 animate-bounce rounded-full bg-primary" style={{ animationDelay: '300ms' }} />
-                    </div>
-                    <span>Analyzing your artwork...</span>
-                  </div>
+              {preview ? (
+                <div className="relative w-full p-4">
+                  <img
+                    src={preview}
+                    alt="Preview"
+                    className="mx-auto max-h-80 rounded-lg object-contain"
+                  />
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      resetForm()
+                    }}
+                    className="absolute right-4 top-4 rounded-full bg-background/80 p-2 text-muted-foreground backdrop-blur-sm transition-colors hover:bg-background hover:text-foreground"
+                  >
+                    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
                 </div>
+              ) : (
+                <div className="p-8 text-center">
+                  <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+                    <svg className="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+                    </svg>
+                  </div>
+                  <p className="text-lg font-medium text-foreground">Drop your artwork here</p>
+                  <p className="mt-1 text-sm text-muted-foreground">or click to browse files</p>
+                  <p className="mt-4 text-xs text-muted-foreground">Supports JPG, PNG, WebP</p>
+                </div>
+              )}
+            </div>
+
+            {/* Context Input */}
+            <div>
+              <label htmlFor="context" className="mb-2 block text-sm font-medium text-foreground">
+                Additional Context <span className="text-muted-foreground">(optional)</span>
+              </label>
+              <textarea
+                id="context"
+                className="min-h-24 w-full resize-none rounded-xl border border-border bg-card px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                placeholder="What were you trying to achieve? Any specific areas you want feedback on?"
+                value={userInput}
+                onChange={(ev) => setUserInput(ev.target.value)}
+              />
+            </div>
+
+            {/* Error */}
+            {error && (
+              <div className="rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+                {error}
               </div>
             )}
 
-            <div ref={messagesEndRef} />
-          </div>
-        )}
-      </div>
-
-      {/* Error Message */}
-      {error && (
-        <div className="mb-4 rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          {error}
+            {/* Submit Button */}
+            <button
+              type="submit"
+              disabled={busy || !file}
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-6 py-3 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {busy ? (
+                <>
+                  <svg className="h-5 w-5 animate-spin" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                  Analyzing...
+                </>
+              ) : (
+                <>
+                  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" />
+                  </svg>
+                  Get Critique
+                </>
+              )}
+            </button>
+          </form>
         </div>
-      )}
 
-      {/* Image Preview */}
-      {preview && (
-        <div className="mb-3 flex items-center gap-3 rounded-lg border border-border bg-card p-3">
-          <img src={preview} alt="Preview" className="h-16 w-16 rounded-lg object-cover" />
-          <div className="flex-1">
-            <p className="text-sm font-medium text-foreground">{file?.name}</p>
-            <p className="text-xs text-muted-foreground">
-              {file && (file.size / 1024).toFixed(1)} KB
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() => {
-              handleFileChange(null)
-              if (fileInputRef.current) fileInputRef.current.value = ''
-            }}
-            className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-          >
-            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-      )}
+        {/* Results Section */}
+        <div className="space-y-6">
+          {result ? (
+            <>
+              {/* Score */}
+              {result.score !== null && (
+                <div className="rounded-2xl border border-border bg-card p-6 text-center">
+                  <p className="text-sm font-medium text-muted-foreground">Overall Score</p>
+                  <div className="mt-2 flex items-center justify-center gap-2">
+                    <span className="text-5xl font-bold text-foreground">{result.score}</span>
+                    <span className="text-2xl text-muted-foreground">/10</span>
+                  </div>
+                  <div className="mt-3 flex items-center justify-center gap-4 text-sm">
+                    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 ${
+                      result.readiness_gate === 'pass' 
+                        ? 'bg-green-500/10 text-green-500' 
+                        : 'bg-yellow-500/10 text-yellow-500'
+                    }`}>
+                      {result.readiness_gate === 'pass' ? 'Ready to Progress' : 'Keep Practicing'}
+                    </span>
+                    <span className="text-muted-foreground">
+                      {(result.confidence * 100).toFixed(0)}% confidence
+                    </span>
+                  </div>
+                </div>
+              )}
 
-      {/* Input Area */}
-      <form
-        className={`flex items-end gap-3 rounded-xl border-2 bg-card p-3 transition-colors ${
-          isDragging ? 'border-primary bg-primary/5' : 'border-border'
-        }`}
-        onSubmit={submitCritique}
-        onDragOver={(e) => {
-          e.preventDefault()
-          setIsDragging(true)
-        }}
-        onDragLeave={() => setIsDragging(false)}
-        onDrop={handleDrop}
-      >
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/*"
-          className="hidden"
-          onChange={(ev) => handleFileChange(ev.target.files?.[0] ?? null)}
-        />
+              {/* Prioritized Issues */}
+              {result.prioritized_issues.length > 0 && (
+                <div className="rounded-2xl border border-border bg-card p-6">
+                  <h3 className="mb-4 flex items-center gap-2 text-lg font-semibold text-foreground">
+                    <svg className="h-5 w-5 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126z" />
+                    </svg>
+                    Areas for Improvement
+                  </h3>
+                  <div className="space-y-4">
+                    {result.prioritized_issues
+                      .slice()
+                      .sort((a, b) => a.priority - b.priority)
+                      .map((issue, index) => (
+                        <div key={index} className="flex gap-4 rounded-xl bg-secondary/50 p-4">
+                          <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-primary/20 text-sm font-semibold text-primary">
+                            {index + 1}
+                          </div>
+                          <div>
+                            <p className="font-medium text-foreground">{issue.title}</p>
+                            <p className="mt-1 text-sm text-muted-foreground">{issue.diagnosis}</p>
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              )}
 
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-          title="Attach image"
-        >
-          <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.372L8.552 18.32m.009-.01l-.01.01m5.699-9.941l-7.81 7.81a1.5 1.5 0 002.112 2.13" />
-          </svg>
-        </button>
+              {/* Root Causes */}
+              {result.root_causes.length > 0 && (
+                <div className="rounded-2xl border border-border bg-card p-6">
+                  <h3 className="mb-4 flex items-center gap-2 text-lg font-semibold text-foreground">
+                    <svg className="h-5 w-5 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+                    </svg>
+                    Root Causes
+                  </h3>
+                  <ul className="space-y-2">
+                    {result.root_causes.map((cause, index) => (
+                      <li key={index} className="flex items-start gap-3 text-sm text-muted-foreground">
+                        <svg className="mt-1 h-4 w-4 flex-shrink-0 text-primary" fill="currentColor" viewBox="0 0 8 8">
+                          <circle cx="4" cy="4" r="3" />
+                        </svg>
+                        {cause}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
 
-        <textarea
-          ref={textareaRef}
-          className="max-h-36 min-h-10 flex-1 resize-none bg-transparent py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
-          placeholder={preview ? 'Add context about your artwork...' : 'Describe your artwork or drop an image here...'}
-          value={userInput}
-          onChange={(ev) => setUserInput(ev.target.value)}
-          onKeyDown={handleKeyDown}
-          rows={1}
-        />
+              {/* Targeted Drills */}
+              {result.targeted_drills.length > 0 && (
+                <div className="rounded-2xl border border-border bg-card p-6">
+                  <h3 className="mb-4 flex items-center gap-2 text-lg font-semibold text-foreground">
+                    <svg className="h-5 w-5 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4.26 10.147a60.436 60.436 0 00-.491 6.347A48.627 48.627 0 0112 20.904a48.627 48.627 0 018.232-4.41 60.46 60.46 0 00-.491-6.347m-15.482 0a50.57 50.57 0 00-2.658-.813A59.905 59.905 0 0112 3.493a59.902 59.902 0 0110.399 5.84c-.896.248-1.783.52-2.658.814m-15.482 0A50.697 50.697 0 0112 13.489a50.702 50.702 0 017.74-3.342M6.75 15a.75.75 0 100-1.5.75.75 0 000 1.5zm0 0v-3.675A55.378 55.378 0 0112 8.443m-7.007 11.55A5.981 5.981 0 006.75 15.75v-1.5" />
+                    </svg>
+                    Recommended Practice
+                  </h3>
+                  <div className="space-y-3">
+                    {result.targeted_drills.map((drill, index) => (
+                      <div key={index} className="rounded-xl bg-secondary/50 p-4">
+                        <p className="font-medium text-foreground">{drill.name}</p>
+                        <p className="mt-1 text-sm text-muted-foreground">{drill.objective}</p>
+                        {drill.duration_minutes && (
+                          <p className="mt-2 text-xs text-muted-foreground">
+                            Estimated time: {drill.duration_minutes} minutes
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
-        <button
-          type="submit"
-          disabled={busy || (!userInput.trim() && !file)}
-          className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
-          title="Send"
-        >
-          {busy ? (
-            <svg className="h-5 w-5 animate-spin" viewBox="0 0 24 24" fill="none">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-            </svg>
+              {/* New Critique Button */}
+              <button
+                type="button"
+                onClick={resetForm}
+                className="w-full rounded-xl border border-border bg-secondary px-6 py-3 text-sm font-semibold text-secondary-foreground transition-colors hover:bg-border"
+              >
+                Critique Another Artwork
+              </button>
+            </>
           ) : (
-            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
-            </svg>
+            <div className="flex h-full min-h-64 flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-card/50 p-8 text-center">
+              <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-secondary text-muted-foreground">
+                <svg className="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" />
+                </svg>
+              </div>
+              <h3 className="text-lg font-semibold text-foreground">Your critique will appear here</h3>
+              <p className="mt-2 max-w-sm text-sm text-muted-foreground">
+                Upload an artwork and click &quot;Get Critique&quot; to receive detailed AI-powered feedback
+              </p>
+            </div>
           )}
-        </button>
-      </form>
-
-      <p className="mt-2 text-center text-xs text-muted-foreground">
-        Press Enter to send, Shift+Enter for new line
-      </p>
-    </div>
-  )
-}
-
-// Component to render formatted markdown-like content
-function FormattedMessage({ content }: { content: string }) {
-  const lines = content.split('\n')
-
-  return (
-    <div className="space-y-2">
-      {lines.map((line, index) => {
-        // Handle bold text with **
-        const formattedLine = line.split(/(\*\*[^*]+\*\*)/).map((part, i) => {
-          if (part.startsWith('**') && part.endsWith('**')) {
-            return (
-              <strong key={i} className="font-semibold text-foreground">
-                {part.slice(2, -2)}
-              </strong>
-            )
-          }
-          // Handle italic text with *
-          return part.split(/(\*[^*]+\*)/).map((subPart, j) => {
-            if (subPart.startsWith('*') && subPart.endsWith('*') && !subPart.startsWith('**')) {
-              return (
-                <em key={`${i}-${j}`} className="italic text-muted-foreground">
-                  {subPart.slice(1, -1)}
-                </em>
-              )
-            }
-            return subPart
-          })
-        })
-
-        if (line.trim() === '') {
-          return <div key={index} className="h-2" />
-        }
-
-        if (line.startsWith('- ')) {
-          return (
-            <div key={index} className="flex items-start gap-2 text-foreground">
-              <svg className="mt-1.5 h-2 w-2 flex-shrink-0 text-primary" fill="currentColor" viewBox="0 0 8 8">
-                <circle cx="4" cy="4" r="3" />
-              </svg>
-              <span>{formattedLine}</span>
-            </div>
-          )
-        }
-
-        if (/^\d+\.\s/.test(line)) {
-          const [num, ...rest] = line.split(/\.\s/)
-          return (
-            <div key={index} className="flex items-start gap-2 text-foreground">
-              <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-primary/20 text-xs font-medium text-primary">
-                {num}
-              </span>
-              <span>{rest.join('. ')}</span>
-            </div>
-          )
-        }
-
-        return (
-          <p key={index} className="text-foreground">
-            {formattedLine}
-          </p>
-        )
-      })}
+        </div>
+      </div>
     </div>
   )
 }

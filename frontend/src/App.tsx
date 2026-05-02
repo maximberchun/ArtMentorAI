@@ -3,6 +3,7 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import { AppShell } from './components/AppShell'
 import { RequireAuth } from './components/RequireAuth'
 import { useAuthSession } from './hooks/useAuthSession'
+import { ConversationPage } from './pages/ConversationPage'
 import { CritiquePage } from './pages/CritiquePage'
 import { HistoryPage } from './pages/HistoryPage'
 import { HomePage } from './pages/HomePage'
@@ -32,6 +33,7 @@ export default function App() {
       <Route path="/" element={withAuth(<HomePage />)} />
       <Route path="/profile" element={withAuth(<ProfilePage />)} />
       <Route path="/critique" element={withAuth(<CritiquePage />)} />
+      <Route path="/conversation" element={withAuth(<ConversationPage />)} />
       <Route path="/portfolio" element={withAuth(<PortfolioPage />)} />
       <Route path="/history" element={withAuth(<HistoryPage />)} />
       <Route path="/progress" element={withAuth(<ProgressPage />)} />
