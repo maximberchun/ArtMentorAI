@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from ule.artmentorai_project.endpoints.analysis import create_analysis_router
-from ule.artmentorai_project.models import AuthUser
+from ule.artmentorai_project.models import AuthUser, ConversationChatResponse
 
 
 @dataclass
@@ -48,6 +48,14 @@ class _FakeAgentService:
 
     async def analyze_image(self, **_kwargs):
         return self._result
+
+    async def answer_conversation(self, **_kwargs):
+        return ConversationChatResponse(
+            reply=(
+                'For fundamentals, many artists start with Betty Edwards or '
+                'a basic perspective text; match the book to your medium and goals.'
+            ),
+        )
 
 
 class _FakeProfileService:
@@ -147,3 +155,33 @@ def test_critique_rejects_invalid_token_with_401(app_config, monkeypatch) -> Non
 
     assert response.status_code == 401
     assert response.json()['detail'] == 'Invalid authorization token'
+
+
+def test_chat_returns_reply_for_general_question(app_config, monkeypatch) -> None:
+    """General Q&A should return a conversational reply without critique RAG."""
+    client = _build_analysis_client(app_config, monkeypatch)
+
+    response = client.post(
+        '/analysis/chat',
+        json={'message': 'What book do you recommend for learning drawing?'},
+        headers={'Authorization': 'Bearer valid-token'},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert 'reply' in payload
+    assert 'Betty Edwards' in payload['reply']
+
+
+def test_chat_rejects_critique_shaped_message_with_422(app_config, monkeypatch) -> None:
+    """Critique-intent text should be directed to /analysis/critique, not /chat."""
+    client = _build_analysis_client(app_config, monkeypatch)
+
+    response = client.post(
+        '/analysis/chat',
+        json={'message': 'Please critique my anatomy study.'},
+        headers={'Authorization': 'Bearer valid-token'},
+    )
+
+    assert response.status_code == 422
+    assert 'artwork feedback' in response.json()['detail'].lower()

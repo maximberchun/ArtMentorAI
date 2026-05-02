@@ -16,7 +16,9 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from ..config import AppConfig
 from ..db import create_sync_supabase_service_client
 from ..exceptions import AIServiceError
-from ..models import AnalysisResponse, AuthUser, UserProfile
+from ..models import AnalysisResponse, AuthUser, ConversationChatResponse, UserProfile
+from ..models.db_rows import ConversationMessageRow
+from ..models.requests import ConversationChatRequest
 from ..repositories import (
     ConversationMessageRepository,
     ConversationRepository,
@@ -30,7 +32,7 @@ from ..repositories.vector_sync_job_repository import ENTITY_CRITIQUE, OP_UPSERT
 from ..services import AgentService, ProfileService, StorageService
 from ..services.auth_service import AuthService
 from ..services.vector_service import ArtCritique, VectorService
-from ..models.db_rows import ConversationMessageRow
+from ..utils.conversation_intent import is_text_only_critique_intent
 from ..utils.upload_validation import (
     validate_file_size,
     validate_image_content_type,
@@ -133,6 +135,46 @@ def _merge_memory_context(
             'highlighting repeated strengths and recurring mistakes.'
         )
     return '\n\n'.join(sections) if sections else None
+
+
+def _prepare_conversation_for_general_chat(
+    *,
+    config: AppConfig,
+    conversation_id: str,
+    user_id: str,
+) -> tuple[str | None, bool]:
+    """Load recent-turn context for chat; return ``(context_text, may_persist)``."""
+
+    def _conversation_not_found() -> None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Conversation not found.',
+        )
+
+    try:
+        sb = create_sync_supabase_service_client(config)
+        conversation_repo = ConversationRepository(sb, config.logger)
+        conversation_message_repo = ConversationMessageRepository(sb, config.logger)
+        conversation = conversation_repo.get_active_for_user(conversation_id, user_id)
+        if conversation is None:
+            _conversation_not_found()
+        recent_messages = conversation_message_repo.list_recent_for_conversation(
+            conversation_id=conversation_id,
+            user_id=user_id,
+            limit=8,
+        )
+        return _format_conversation_messages_for_prompt(recent_messages), True
+    except HTTPException:
+        raise
+    except RuntimeError as conversation_error:
+        config.logger.warning(
+            'Conversation lookup failed for user_id=%s conversation_id=%s: %s. '
+            'Proceeding without short-term conversation memory.',
+            user_id,
+            conversation_id,
+            str(conversation_error),
+        )
+        return None, False
 
 
 def _format_conversation_messages_for_prompt(messages: list[ConversationMessageRow]) -> str | None:
@@ -302,6 +344,7 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
         Args:
             file:       Optional image file to analyse.
             user_input: Optional user comments or description of the artwork.
+            conversation_id: Optional thread id for short-term message context.
             user:       Authenticated user identity (from Supabase access token).
 
         Returns:
@@ -680,6 +723,106 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f'Error analyzing image: {e!s}',
             ) from e
+
+    @router.post(
+        '/chat',
+        summary='General art-learning chat',
+        description=(
+            'Answer questions about learning methods, books, tools, and theory. '
+            'Does not use critique memory (RAG). For artwork feedback with structure, '
+            'use /analysis/critique (with an image when possible).'
+        ),
+    )
+    async def conversation_chat(
+        user: Annotated[AuthUser, Depends(current_user)],
+        body: ConversationChatRequest,
+    ) -> ConversationChatResponse:
+        """General Q&A turn: no structured critique schema, no critique vector retrieval."""
+        message = body.message.strip()
+        if is_text_only_critique_intent(message):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    'This message looks like a request for artwork feedback. '
+                    'Upload an image and use /analysis/critique, or ask a general question.'
+                ),
+            )
+
+        conversation_context_str: str | None = None
+        conversation_ready = False
+        active_conversation_id = (
+            body.conversation_id.strip()
+            if body.conversation_id and body.conversation_id.strip()
+            else None
+        )
+        if active_conversation_id:
+            conversation_context_str, conversation_ready = _prepare_conversation_for_general_chat(
+                config=config,
+                conversation_id=active_conversation_id,
+                user_id=user.user_id,
+            )
+
+        profile_context_str: str | None = None
+        try:
+            profile = profile_service.get_profile(user.user_id)
+        except RuntimeError as e:
+            config.logger.warning(
+                'Failed to load profile for user_id=%s: %s. Proceeding without profile.',
+                user.user_id,
+                str(e),
+            )
+        else:
+            if profile is not None:
+                profile_context_str = _format_profile_for_prompt(profile)
+
+        try:
+            result = await agent_service.answer_conversation(
+                user_input=message,
+                profile_context=profile_context_str,
+                conversation_context=conversation_context_str,
+            )
+        except AIServiceError as e:
+            config.logger.warning('AI service error: %s (code=%s)', e.message, e.error_code)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    'error': e.error_code,
+                    'message': e.message,
+                    'retry_after': e.retry_after,
+                },
+            ) from e
+        except Exception as e:
+            config.logger.exception('Error in conversation chat')
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f'Error in conversation chat: {e!s}',
+            ) from e
+
+        if conversation_ready and active_conversation_id:
+            try:
+                sb = create_sync_supabase_service_client(config)
+                msg_repo = ConversationMessageRepository(sb, config.logger)
+                msg_repo.create(
+                    conversation_id=active_conversation_id,
+                    user_id=user.user_id,
+                    role='user',
+                    content=message,
+                    critique_id=None,
+                )
+                msg_repo.create(
+                    conversation_id=active_conversation_id,
+                    user_id=user.user_id,
+                    role='assistant',
+                    content=result.reply[:12000],
+                    critique_id=None,
+                )
+            except RuntimeError as persist_error:
+                config.logger.warning(
+                    'Conversation chat message persistence failed: %s',
+                    str(persist_error),
+                )
+
+        return result
 
     @router.get(
         '/conversations/{conversation_id}/messages',

@@ -24,6 +24,10 @@ export type AnalysisResponse = {
   confidence: number
 }
 
+export type ConversationChatResponse = {
+  reply: string
+}
+
 export type PrioritizedIssue = {
   title: string
   diagnosis: string
@@ -34,6 +38,7 @@ export type TargetedDrill = {
   name: string
   objective: string
   success_check: string
+  duration_minutes?: number
 }
 
 export type ConversationInfo = {

@@ -1,6 +1,7 @@
 import { FormEvent, useState, useRef, useEffect } from 'react'
 import { apiFetch, apiJson } from '../lib/api'
-import { AnalysisResponse, ConversationInfo } from '../types/api'
+import { isTextOnlyCritiqueIntent } from '../lib/conversationIntent'
+import { AnalysisResponse, ConversationChatResponse, ConversationInfo } from '../types/api'
 
 interface ChatMessage {
   id: string
@@ -9,6 +10,8 @@ interface ChatMessage {
   image?: string
   timestamp: Date
   analysis?: AnalysisResponse
+  /** Assistant turn shape; default critique for backward compatibility in UI. */
+  assistantKind?: 'critique' | 'chat'
 }
 
 export function ConversationPage() {
@@ -103,26 +106,48 @@ export function ConversationPage() {
     try {
       const conversationId = await ensureConversation()
 
-      const formData = new FormData()
-      if (currentFile) formData.append('file', currentFile)
-      if (currentInput.trim()) formData.append('user_input', currentInput)
-      formData.append('conversation_id', conversationId)
+      const useCritique =
+        currentFile !== null ||
+        (currentInput.trim().length > 0 && isTextOnlyCritiqueIntent(currentInput))
 
-      const response = await apiFetch('/analysis/critique', {
-        method: 'POST',
-        body: formData,
-      })
-      const data = (await response.json()) as AnalysisResponse
+      if (!useCritique && currentInput.trim()) {
+        const chatPayload = await apiJson<ConversationChatResponse>('/analysis/chat', {
+          method: 'POST',
+          body: JSON.stringify({
+            message: currentInput.trim(),
+            conversation_id: conversationId,
+          }),
+        })
+        const assistantMessage: ChatMessage = {
+          id: `assistant-${Date.now()}`,
+          role: 'assistant',
+          content: chatPayload.reply,
+          timestamp: new Date(),
+          assistantKind: 'chat',
+        }
+        setChatMessages(prev => [...prev, assistantMessage])
+      } else {
+        const formData = new FormData()
+        if (currentFile) formData.append('file', currentFile)
+        if (currentInput.trim()) formData.append('user_input', currentInput)
+        formData.append('conversation_id', conversationId)
 
-      // Add AI response to chat
-      const assistantMessage: ChatMessage = {
-        id: `assistant-${Date.now()}`,
-        role: 'assistant',
-        content: formatCritiqueResponse(data),
-        timestamp: new Date(),
-        analysis: data,
+        const response = await apiFetch('/analysis/critique', {
+          method: 'POST',
+          body: formData,
+        })
+        const data = (await response.json()) as AnalysisResponse
+
+        const assistantMessage: ChatMessage = {
+          id: `assistant-${Date.now()}`,
+          role: 'assistant',
+          content: formatCritiqueResponse(data),
+          timestamp: new Date(),
+          analysis: data,
+          assistantKind: 'critique',
+        }
+        setChatMessages(prev => [...prev, assistantMessage])
       }
-      setChatMessages(prev => [...prev, assistantMessage])
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send message.')
       // Remove the optimistic user message if request failed
