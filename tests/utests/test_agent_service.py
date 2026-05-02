@@ -143,3 +143,63 @@ def test_analyze_image_maps_quota_errors_with_retry_delay(
 
     assert exc.value.error_code == 'QUOTA_EXCEEDED'
     assert exc.value.retry_after == 2.0
+
+
+def test_analyze_image_normalizes_issue_and_drill_order_by_dependency() -> None:
+    """Out-of-order suggestions should be normalized to fundamentals-first sequence."""
+    output_payload = {
+        'score': 6,
+        'rubric_anchors': ['Readable silhouette but unstable perspective'],
+        'prioritized_issues': [
+            {
+                'title': 'Anatomy over-definition',
+                'diagnosis': 'Muscle rendering is refined before construction is stable.',
+                'priority': 1,
+            },
+            {
+                'title': 'Perspective drift in torso box',
+                'diagnosis': 'Torso box vanishing direction changes across the pose.',
+                'priority': 2,
+            },
+            {
+                'title': 'Construction breakdown in major forms',
+                'diagnosis': 'Primary form volumes collapse during block in.',
+                'priority': 3,
+            },
+        ],
+        'root_causes': ['Detail pass started before core structure checks'],
+        'targeted_drills': [
+            {
+                'name': 'Anatomy landmark polish pass',
+                'objective': 'Refine landmark placement with surface detail.',
+                'success_check': 'Landmarks read clearly during rendering.',
+            },
+            {
+                'name': 'Perspective box sheet',
+                'objective': 'Keep vanishing direction consistent for torso forms.',
+                'success_check': '8 out of 10 boxes converge to coherent points.',
+            },
+            {
+                'name': 'Construction gesture block-in set',
+                'objective': 'Build stable form volumes before detail.',
+                'success_check': 'Major forms remain readable after line cleanup.',
+            },
+        ],
+        'readiness_gate': 'Do not advance until construction and perspective are stable.',
+        'confidence': 0.81,
+    }
+    service = _build_service(_CapturingAgent(output_payload))
+
+    result = asyncio.run(service.analyze_image(user_input='Check my workflow', has_artwork=True))
+
+    assert [issue.title for issue in result.prioritized_issues] == [
+        'Construction breakdown in major forms',
+        'Perspective drift in torso box',
+        'Anatomy over-definition',
+    ]
+    assert [issue.priority for issue in result.prioritized_issues] == [1, 2, 3]
+    assert [drill.name for drill in result.targeted_drills] == [
+        'Construction gesture block-in set',
+        'Perspective box sheet',
+        'Anatomy landmark polish pass',
+    ]

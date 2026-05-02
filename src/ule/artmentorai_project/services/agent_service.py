@@ -87,6 +87,59 @@ _NO_ARTWORK_SCORING_SECTION = (
     'Return `"score": null` and focus feedback on the provided text context only.'
 )
 
+_SUGGESTION_ORDER = {
+    'foundation': 0,
+    'proportion_perspective': 1,
+    'anatomy': 2,
+    'style_detail': 3,
+}
+
+_SUGGESTION_STAGE_KEYWORDS = {
+    'foundation': (
+        'construction',
+        'form',
+        'gesture',
+        'silhouette',
+        'volume',
+        'shape',
+        'block-in',
+        'block in',
+    ),
+    'proportion_perspective': (
+        'proportion',
+        'perspective',
+        'foreshorten',
+        'foreshortening',
+        'horizon',
+        'vanishing',
+        'alignment',
+        'measurement',
+    ),
+    'anatomy': (
+        'anatomy',
+        'muscle',
+        'skeletal',
+        'joint',
+        'landmark',
+        'ribcage',
+        'pelvis',
+        'limb',
+        'torso',
+    ),
+    'style_detail': (
+        'detail',
+        'render',
+        'rendering',
+        'texture',
+        'style',
+        'stylization',
+        'line weight',
+        'shading',
+        'polish',
+        'finish',
+    ),
+}
+
 
 _WEB_SEARCH_SYSTEM_INSTRUCTIONS = """
                     6. Use tool `web_search` only when you need external factual references
@@ -359,6 +412,70 @@ class AgentService:
 
         return prompt
 
+    @staticmethod
+    def _infer_suggestion_stage(text: str) -> str:
+        """Infer pedagogical stage from freeform issue/drill text."""
+        lowered = text.lower()
+        stage_order = (
+            'foundation',
+            'proportion_perspective',
+            'anatomy',
+            'style_detail',
+        )
+        best_stage = 'style_detail'
+        best_count = 0
+        for stage in stage_order:
+            count = sum(1 for keyword in _SUGGESTION_STAGE_KEYWORDS[stage] if keyword in lowered)
+            if count > best_count:
+                best_stage = stage
+                best_count = count
+        if best_count > 0:
+            return best_stage
+        return 'style_detail'
+
+    def _normalize_learning_dependency_order(
+        self,
+        analysis_data: AnalysisResponse,
+    ) -> AnalysisResponse:
+        """Reorder issues/drills to keep fundamentals-first learning progression."""
+        prioritized_issues = list(analysis_data.prioritized_issues)
+        targeted_drills = list(analysis_data.targeted_drills)
+        issues_before = [issue.title for issue in prioritized_issues]
+        drills_before = [drill.name for drill in targeted_drills]
+
+        prioritized_issues.sort(
+            key=lambda issue: (
+                _SUGGESTION_ORDER[
+                    self._infer_suggestion_stage(f'{issue.title} {issue.diagnosis}')
+                ],
+                issue.priority,
+            )
+        )
+        for index, issue in enumerate(prioritized_issues, start=1):
+            issue.priority = index
+
+        targeted_drills.sort(
+            key=lambda drill: _SUGGESTION_ORDER[
+                self._infer_suggestion_stage(
+                    f'{drill.name} {drill.objective} {drill.success_check}'
+                )
+            ]
+        )
+
+        issues_after = [issue.title for issue in prioritized_issues]
+        drills_after = [drill.name for drill in targeted_drills]
+        if issues_before != issues_after or drills_before != drills_after:
+            self.logger.info(
+                'Normalized critique ordering to fundamentals-first dependency sequence '
+                '(issues_changed=%s, drills_changed=%s)',
+                issues_before != issues_after,
+                drills_before != drills_after,
+            )
+
+        analysis_data.prioritized_issues = prioritized_issues
+        analysis_data.targeted_drills = targeted_drills
+        return analysis_data
+
     async def analyze_image(
         self,
         image_bytes: bytes | None = None,
@@ -443,6 +560,7 @@ class AgentService:
                 else:
                     analysis_data = AnalysisResponse.model_validate(analysis_data)
 
+            analysis_data = self._normalize_learning_dependency_order(analysis_data)
             self.logger.info('Analysis completed. Score: %s/10', analysis_data.score)
             return analysis_data  # noqa: TRY300
         except ModelHTTPError as e:
