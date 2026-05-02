@@ -1,20 +1,41 @@
-import { FormEvent, useState, useRef } from 'react'
+import { FormEvent, useState, useRef, useEffect } from 'react'
 import { apiFetch, apiJson } from '../lib/api'
 import { AnalysisResponse, ConversationInfo, ConversationMessage } from '../types/api'
+
+interface ChatMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  image?: string
+  timestamp: Date
+  analysis?: AnalysisResponse
+}
 
 export function CritiquePage() {
   const [userInput, setUserInput] = useState('')
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [creatingConversation, setCreatingConversation] = useState(false)
-  const [loadingMessages, setLoadingMessages] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [result, setResult] = useState<AnalysisResponse | null>(null)
   const [conversation, setConversation] = useState<ConversationInfo | null>(null)
-  const [messages, setMessages] = useState<ConversationMessage[]>([])
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [isDragging, setIsDragging] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // Auto-scroll to bottom when new messages arrive
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [chatMessages])
+
+  // Auto-resize textarea
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto'
+      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 150)}px`
+    }
+  }, [userInput])
 
   function handleFileChange(selectedFile: File | null) {
     setFile(selectedFile)
@@ -36,364 +57,410 @@ export function CritiquePage() {
     }
   }
 
-  async function createConversation() {
-    setCreatingConversation(true)
-    setError(null)
+  async function ensureConversation(): Promise<string> {
+    if (conversation?.id) return conversation.id
+    
     try {
       const created = await apiJson<ConversationInfo>('/analysis/conversations', {
         method: 'POST',
         body: JSON.stringify({}),
       })
       setConversation(created)
-      setMessages([])
+      return created.id
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create conversation.')
-    } finally {
-      setCreatingConversation(false)
-    }
-  }
-
-  async function refreshConversationMessages(conversationId: string) {
-    setLoadingMessages(true)
-    try {
-      const data = await apiJson<ConversationMessage[]>(
-        `/analysis/conversations/${conversationId}/messages`
-      )
-      setMessages(data)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load conversation messages.')
-    } finally {
-      setLoadingMessages(false)
+      throw new Error('Failed to create conversation')
     }
   }
 
   async function submitCritique(e: FormEvent) {
     e.preventDefault()
     if (!file && !userInput.trim()) {
-      setError('Provide at least an image or a text prompt before submitting.')
-      setResult(null)
+      setError('Please provide an image or a message.')
       return
     }
+
     setBusy(true)
     setError(null)
-    setResult(null)
+
+    // Add user message to chat immediately
+    const userMessage: ChatMessage = {
+      id: `user-${Date.now()}`,
+      role: 'user',
+      content: userInput.trim() || 'Please critique this artwork',
+      image: preview || undefined,
+      timestamp: new Date(),
+    }
+    setChatMessages(prev => [...prev, userMessage])
+
+    // Clear input immediately for better UX
+    const currentInput = userInput
+    const currentFile = file
+    setUserInput('')
+    setFile(null)
+    setPreview(null)
+    if (fileInputRef.current) fileInputRef.current.value = ''
+
     try {
+      const conversationId = await ensureConversation()
+
       const formData = new FormData()
-      if (file) formData.append('file', file)
-      if (userInput.trim()) formData.append('user_input', userInput)
-      if (conversation?.id) formData.append('conversation_id', conversation.id)
+      if (currentFile) formData.append('file', currentFile)
+      if (currentInput.trim()) formData.append('user_input', currentInput)
+      formData.append('conversation_id', conversationId)
+
       const response = await apiFetch('/analysis/critique', {
         method: 'POST',
         body: formData,
       })
       const data = (await response.json()) as AnalysisResponse
-      setResult(data)
-      if (conversation?.id) {
-        await refreshConversationMessages(conversation.id)
+
+      // Add AI response to chat
+      const assistantMessage: ChatMessage = {
+        id: `assistant-${Date.now()}`,
+        role: 'assistant',
+        content: formatCritiqueResponse(data),
+        timestamp: new Date(),
+        analysis: data,
       }
+      setChatMessages(prev => [...prev, assistantMessage])
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Critique failed.')
+      // Remove the optimistic user message if request failed
+      setChatMessages(prev => prev.filter(m => m.id !== userMessage.id))
     } finally {
       setBusy(false)
     }
   }
 
+  function formatCritiqueResponse(data: AnalysisResponse): string {
+    let response = ''
+
+    if (data.score !== null) {
+      response += `**Overall Score: ${data.score}/10**\n\n`
+    }
+
+    if (data.prioritized_issues.length > 0) {
+      response += `**Key Areas for Improvement:**\n`
+      data.prioritized_issues
+        .slice()
+        .sort((a, b) => a.priority - b.priority)
+        .forEach((issue, index) => {
+          response += `${index + 1}. **${issue.title}**: ${issue.diagnosis}\n`
+        })
+      response += '\n'
+    }
+
+    if (data.root_causes.length > 0) {
+      response += `**Root Causes:**\n`
+      data.root_causes.forEach(cause => {
+        response += `- ${cause}\n`
+      })
+      response += '\n'
+    }
+
+    if (data.targeted_drills.length > 0) {
+      response += `**Recommended Practice:**\n`
+      data.targeted_drills.forEach(drill => {
+        response += `- **${drill.name}**: ${drill.objective}\n`
+      })
+      response += '\n'
+    }
+
+    response += `*Readiness: ${data.readiness_gate} | Confidence: ${(data.confidence * 100).toFixed(0)}%*`
+
+    return response
+  }
+
+  function startNewConversation() {
+    setConversation(null)
+    setChatMessages([])
+    setError(null)
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      if (!busy && (userInput.trim() || file)) {
+        submitCritique(e as unknown as FormEvent)
+      }
+    }
+  }
+
   return (
-    <div className="space-y-6">
+    <div className="flex h-[calc(100vh-8rem)] flex-col">
       {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-foreground">Art Critique</h1>
-        <p className="mt-1 text-muted-foreground">
-          Upload your artwork and receive detailed AI-powered feedback
-        </p>
+      <div className="flex items-center justify-between border-b border-border pb-4">
+        <div>
+          <h1 className="text-xl font-bold text-foreground">Art Critique</h1>
+          <p className="text-sm text-muted-foreground">
+            {conversation ? `Conversation: ${conversation.id.slice(0, 8)}...` : 'Start a new conversation'}
+          </p>
+        </div>
+        {chatMessages.length > 0 && (
+          <button
+            type="button"
+            onClick={startNewConversation}
+            className="inline-flex items-center gap-2 rounded-lg border border-border bg-secondary px-3 py-2 text-sm font-medium text-secondary-foreground transition-colors hover:bg-border"
+          >
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+            </svg>
+            New Chat
+          </button>
+        )}
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        {/* Upload Section */}
-        <div className="space-y-6">
-          {/* Conversation Panel */}
-          <div className="rounded-xl border border-border bg-card p-4">
-            <div className="flex flex-wrap items-center gap-3">
-              <button
-                type="button"
-                onClick={() => void createConversation()}
-                disabled={creatingConversation}
-                className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
-              >
-                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-                </svg>
-                {creatingConversation ? 'Starting...' : 'New Conversation'}
-              </button>
-
-              {conversation && (
-                <>
-                  <span className="rounded-lg bg-secondary px-3 py-1.5 text-xs font-medium text-muted-foreground">
-                    Thread: {conversation.id.slice(0, 8)}...
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => void refreshConversationMessages(conversation.id)}
-                    disabled={loadingMessages}
-                    className="rounded-lg border border-border bg-secondary px-3 py-1.5 text-xs font-medium text-secondary-foreground transition-colors hover:bg-border disabled:opacity-50"
-                  >
-                    {loadingMessages ? 'Refreshing...' : 'Refresh'}
-                  </button>
-                </>
-              )}
+      {/* Chat Messages */}
+      <div className="flex-1 overflow-y-auto py-4">
+        {chatMessages.length === 0 ? (
+          <div className="flex h-full flex-col items-center justify-center text-center">
+            <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+              <svg className="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z" />
+              </svg>
             </div>
-
-            {!conversation && (
-              <p className="mt-3 text-xs text-muted-foreground">
-                Start a conversation to maintain context between critiques
-              </p>
-            )}
+            <h2 className="mb-2 text-lg font-semibold text-foreground">Welcome to Art Critique</h2>
+            <p className="max-w-md text-sm text-muted-foreground">
+              Upload your artwork and I&apos;ll provide detailed feedback on composition, technique, and areas for improvement.
+            </p>
+            <div className="mt-6 grid gap-2 text-left">
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <svg className="h-4 w-4 text-primary" fill="currentColor" viewBox="0 0 8 8">
+                  <circle cx="4" cy="4" r="3" />
+                </svg>
+                Drop an image or use the attachment button
+              </div>
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <svg className="h-4 w-4 text-primary" fill="currentColor" viewBox="0 0 8 8">
+                  <circle cx="4" cy="4" r="3" />
+                </svg>
+                Add context about your goals or specific questions
+              </div>
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <svg className="h-4 w-4 text-primary" fill="currentColor" viewBox="0 0 8 8">
+                  <circle cx="4" cy="4" r="3" />
+                </svg>
+                Continue the conversation for follow-up feedback
+              </div>
+            </div>
           </div>
-
-          {/* Upload Form */}
-          <form className="space-y-4" onSubmit={submitCritique}>
-            <div
-              className={`relative rounded-xl border-2 border-dashed p-6 text-center transition-colors ${
-                isDragging
-                  ? 'border-primary bg-primary/5'
-                  : 'border-border hover:border-muted-foreground'
-              }`}
-              onDragOver={(e) => {
-                e.preventDefault()
-                setIsDragging(true)
-              }}
-              onDragLeave={() => setIsDragging(false)}
-              onDrop={handleDrop}
-            >
-              {preview ? (
-                <div className="space-y-4">
-                  <img
-                    src={preview}
-                    alt="Preview"
-                    className="mx-auto max-h-64 rounded-lg object-contain"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      handleFileChange(null)
-                      if (fileInputRef.current) fileInputRef.current.value = ''
-                    }}
-                    className="text-sm text-muted-foreground hover:text-foreground"
-                  >
-                    Remove image
-                  </button>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-lg bg-secondary text-muted-foreground">
-                    <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 001.5-1.5V6a1.5 1.5 0 00-1.5-1.5H3.75A1.5 1.5 0 002.25 6v12a1.5 1.5 0 001.5 1.5zm10.5-11.25h.008v.008h-.008V8.25zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z" />
-                    </svg>
+        ) : (
+          <div className="space-y-4">
+            {chatMessages.map((message) => (
+              <div
+                key={message.id}
+                className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+              >
+                <div
+                  className={`max-w-[85%] rounded-2xl px-4 py-3 ${
+                    message.role === 'user'
+                      ? 'bg-primary text-primary-foreground'
+                      : 'bg-card border border-border'
+                  }`}
+                >
+                  {message.image && (
+                    <img
+                      src={message.image}
+                      alt="Uploaded artwork"
+                      className="mb-3 max-h-64 rounded-lg object-contain"
+                    />
+                  )}
+                  <div className={`text-sm leading-relaxed ${message.role === 'assistant' ? 'prose prose-sm prose-invert max-w-none' : ''}`}>
+                    {message.role === 'assistant' ? (
+                      <FormattedMessage content={message.content} />
+                    ) : (
+                      <p>{message.content}</p>
+                    )}
                   </div>
-                  <div>
-                    <button
-                      type="button"
-                      onClick={() => fileInputRef.current?.click()}
-                      className="text-sm font-medium text-primary hover:text-primary/80"
-                    >
-                      Upload your artwork
-                    </button>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      or drag and drop here
-                    </p>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    PNG, JPG, GIF up to 10MB
+                  <p className={`mt-2 text-xs ${message.role === 'user' ? 'text-primary-foreground/70' : 'text-muted-foreground'}`}>
+                    {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </p>
                 </div>
-              )}
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={(ev) => handleFileChange(ev.target.files?.[0] ?? null)}
-              />
-            </div>
-
-            <div>
-              <label htmlFor="context" className="mb-1.5 block text-sm font-medium text-foreground">
-                Additional context (optional)
-              </label>
-              <textarea
-                id="context"
-                className="min-h-28 w-full rounded-lg border border-input bg-background px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                placeholder="Add any context about your artwork, specific areas you want feedback on, or questions..."
-                value={userInput}
-                onChange={(ev) => setUserInput(ev.target.value)}
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={busy}
-              className="w-full rounded-lg bg-primary px-4 py-3 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
-            >
-              {busy ? (
-                <span className="flex items-center justify-center gap-2">
-                  <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                  </svg>
-                  Analyzing...
-                </span>
-              ) : (
-                'Get Critique'
-              )}
-            </button>
-          </form>
-
-          {error && (
-            <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive">
-              {error}
-            </div>
-          )}
-        </div>
-
-        {/* Results Section */}
-        <div className="space-y-6">
-          {result && (
-            <div className="rounded-xl border border-border bg-card p-6">
-              <div className="mb-4 flex items-center justify-between">
-                <h2 className="text-lg font-semibold text-foreground">Critique Results</h2>
-                {result.score !== null && (
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm text-muted-foreground">Score</span>
-                    <span className="rounded-lg bg-primary px-3 py-1 text-lg font-bold text-primary-foreground">
-                      {result.score}/10
-                    </span>
-                  </div>
-                )}
               </div>
+            ))}
 
-              <div className="space-y-6">
-                {result.rubric_anchors.length > 0 && (
-                  <div>
-                    <h3 className="mb-2 text-sm font-medium text-foreground">Rubric Anchors</h3>
-                    <ul className="space-y-1">
-                      {result.rubric_anchors.map((item) => (
-                        <li key={item} className="flex items-start gap-2 text-sm text-muted-foreground">
-                          <svg className="mt-1 h-3 w-3 flex-shrink-0 text-primary" fill="currentColor" viewBox="0 0 8 8">
-                            <circle cx="4" cy="4" r="3" />
-                          </svg>
-                          {item}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-
-                {result.prioritized_issues.length > 0 && (
-                  <div>
-                    <h3 className="mb-3 text-sm font-medium text-foreground">Priority Issues</h3>
-                    <div className="space-y-3">
-                      {result.prioritized_issues
-                        .slice()
-                        .sort((a, b) => a.priority - b.priority)
-                        .map((item) => (
-                          <div
-                            key={`${item.title}-${item.priority}`}
-                            className="rounded-lg border border-border bg-secondary/50 p-4"
-                          >
-                            <div className="flex items-center gap-2">
-                              <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">
-                                {item.priority}
-                              </span>
-                              <h4 className="font-medium text-foreground">{item.title}</h4>
-                            </div>
-                            <p className="mt-2 text-sm text-muted-foreground">{item.diagnosis}</p>
-                          </div>
-                        ))}
+            {busy && (
+              <div className="flex justify-start">
+                <div className="rounded-2xl border border-border bg-card px-4 py-3">
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <div className="flex gap-1">
+                      <span className="h-2 w-2 animate-bounce rounded-full bg-primary" style={{ animationDelay: '0ms' }} />
+                      <span className="h-2 w-2 animate-bounce rounded-full bg-primary" style={{ animationDelay: '150ms' }} />
+                      <span className="h-2 w-2 animate-bounce rounded-full bg-primary" style={{ animationDelay: '300ms' }} />
                     </div>
+                    <span>Analyzing your artwork...</span>
                   </div>
-                )}
-
-                {result.root_causes.length > 0 && (
-                  <div>
-                    <h3 className="mb-2 text-sm font-medium text-foreground">Root Causes</h3>
-                    <ul className="space-y-1">
-                      {result.root_causes.map((cause) => (
-                        <li key={cause} className="flex items-start gap-2 text-sm text-muted-foreground">
-                          <svg className="mt-1 h-3 w-3 flex-shrink-0 text-warning" fill="currentColor" viewBox="0 0 8 8">
-                            <circle cx="4" cy="4" r="3" />
-                          </svg>
-                          {cause}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-
-                {result.targeted_drills.length > 0 && (
-                  <div>
-                    <h3 className="mb-3 text-sm font-medium text-foreground">Recommended Drills</h3>
-                    <div className="space-y-2">
-                      {result.targeted_drills.map((drill) => (
-                        <div key={drill.name} className="rounded-lg border border-border bg-secondary/50 p-3">
-                          <h4 className="font-medium text-foreground">{drill.name}</h4>
-                          <p className="mt-1 text-sm text-muted-foreground">{drill.objective}</p>
-                          <p className="mt-1 text-xs text-primary">Success check: {drill.success_check}</p>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                <div className="flex items-center justify-between border-t border-border pt-4">
-                  <p className="text-sm text-muted-foreground">
-                    <span className="font-medium text-foreground">Readiness:</span> {result.readiness_gate}
-                  </p>
-                  <span className="rounded-full bg-secondary px-2 py-0.5 text-xs text-muted-foreground">
-                    {(result.confidence * 100).toFixed(0)}% confidence
-                  </span>
                 </div>
               </div>
-            </div>
-          )}
+            )}
 
-          {/* Conversation Messages */}
-          {conversation && messages.length > 0 && (
-            <div className="rounded-xl border border-border bg-card p-6">
-              <h2 className="mb-4 text-lg font-semibold text-foreground">Conversation History</h2>
-              <div className="space-y-3">
-                {messages.map((message) => (
-                  <div
-                    key={message.id}
-                    className={`rounded-lg p-4 ${
-                      message.role === 'user'
-                        ? 'bg-primary/10 border border-primary/20'
-                        : 'bg-secondary'
-                    }`}
-                  >
-                    <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                      {message.role}
-                    </p>
-                    <p className="whitespace-pre-wrap text-sm text-foreground">{message.content}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {!result && !conversation && (
-            <div className="flex h-64 items-center justify-center rounded-xl border border-dashed border-border">
-              <div className="text-center">
-                <svg className="mx-auto h-12 w-12 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z" />
-                </svg>
-                <p className="mt-2 text-sm text-muted-foreground">
-                  Upload artwork to receive AI critique
-                </p>
-              </div>
-            </div>
-          )}
-        </div>
+            <div ref={messagesEndRef} />
+          </div>
+        )}
       </div>
+
+      {/* Error Message */}
+      {error && (
+        <div className="mb-4 rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+
+      {/* Image Preview */}
+      {preview && (
+        <div className="mb-3 flex items-center gap-3 rounded-lg border border-border bg-card p-3">
+          <img src={preview} alt="Preview" className="h-16 w-16 rounded-lg object-cover" />
+          <div className="flex-1">
+            <p className="text-sm font-medium text-foreground">{file?.name}</p>
+            <p className="text-xs text-muted-foreground">
+              {file && (file.size / 1024).toFixed(1)} KB
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              handleFileChange(null)
+              if (fileInputRef.current) fileInputRef.current.value = ''
+            }}
+            className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+          >
+            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      )}
+
+      {/* Input Area */}
+      <form
+        className={`flex items-end gap-3 rounded-xl border-2 bg-card p-3 transition-colors ${
+          isDragging ? 'border-primary bg-primary/5' : 'border-border'
+        }`}
+        onSubmit={submitCritique}
+        onDragOver={(e) => {
+          e.preventDefault()
+          setIsDragging(true)
+        }}
+        onDragLeave={() => setIsDragging(false)}
+        onDrop={handleDrop}
+      >
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(ev) => handleFileChange(ev.target.files?.[0] ?? null)}
+        />
+
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+          title="Attach image"
+        >
+          <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.372L8.552 18.32m.009-.01l-.01.01m5.699-9.941l-7.81 7.81a1.5 1.5 0 002.112 2.13" />
+          </svg>
+        </button>
+
+        <textarea
+          ref={textareaRef}
+          className="max-h-36 min-h-10 flex-1 resize-none bg-transparent py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
+          placeholder={preview ? 'Add context about your artwork...' : 'Describe your artwork or drop an image here...'}
+          value={userInput}
+          onChange={(ev) => setUserInput(ev.target.value)}
+          onKeyDown={handleKeyDown}
+          rows={1}
+        />
+
+        <button
+          type="submit"
+          disabled={busy || (!userInput.trim() && !file)}
+          className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+          title="Send"
+        >
+          {busy ? (
+            <svg className="h-5 w-5 animate-spin" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+            </svg>
+          ) : (
+            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+            </svg>
+          )}
+        </button>
+      </form>
+
+      <p className="mt-2 text-center text-xs text-muted-foreground">
+        Press Enter to send, Shift+Enter for new line
+      </p>
+    </div>
+  )
+}
+
+// Component to render formatted markdown-like content
+function FormattedMessage({ content }: { content: string }) {
+  const lines = content.split('\n')
+
+  return (
+    <div className="space-y-2">
+      {lines.map((line, index) => {
+        // Handle bold text with **
+        const formattedLine = line.split(/(\*\*[^*]+\*\*)/).map((part, i) => {
+          if (part.startsWith('**') && part.endsWith('**')) {
+            return (
+              <strong key={i} className="font-semibold text-foreground">
+                {part.slice(2, -2)}
+              </strong>
+            )
+          }
+          // Handle italic text with *
+          return part.split(/(\*[^*]+\*)/).map((subPart, j) => {
+            if (subPart.startsWith('*') && subPart.endsWith('*') && !subPart.startsWith('**')) {
+              return (
+                <em key={`${i}-${j}`} className="italic text-muted-foreground">
+                  {subPart.slice(1, -1)}
+                </em>
+              )
+            }
+            return subPart
+          })
+        })
+
+        if (line.trim() === '') {
+          return <div key={index} className="h-2" />
+        }
+
+        if (line.startsWith('- ')) {
+          return (
+            <div key={index} className="flex items-start gap-2 text-foreground">
+              <svg className="mt-1.5 h-2 w-2 flex-shrink-0 text-primary" fill="currentColor" viewBox="0 0 8 8">
+                <circle cx="4" cy="4" r="3" />
+              </svg>
+              <span>{formattedLine}</span>
+            </div>
+          )
+        }
+
+        if (/^\d+\.\s/.test(line)) {
+          const [num, ...rest] = line.split(/\.\s/)
+          return (
+            <div key={index} className="flex items-start gap-2 text-foreground">
+              <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-primary/20 text-xs font-medium text-primary">
+                {num}
+              </span>
+              <span>{rest.join('. ')}</span>
+            </div>
+          )
+        }
+
+        return (
+          <p key={index} className="text-foreground">
+            {formattedLine}
+          </p>
+        )
+      })}
     </div>
   )
 }

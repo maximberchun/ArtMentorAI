@@ -39,10 +39,34 @@ const features = [
   },
 ]
 
-const stats = [
-  { label: 'AI Critiques', value: '10K+' },
-  { label: 'Artists Helped', value: '2K+' },
-  { label: 'Skills Tracked', value: '50+' },
+const highlights = [
+  { 
+    label: 'Instant Feedback', 
+    description: 'Get detailed critiques in seconds',
+    icon: (
+      <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z" />
+      </svg>
+    )
+  },
+  { 
+    label: 'Chat-Based', 
+    description: 'Conversational AI that remembers context',
+    icon: (
+      <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" />
+      </svg>
+    )
+  },
+  { 
+    label: 'Track Progress', 
+    description: 'See your improvement over time',
+    icon: (
+      <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 18L9 11.25l4.306 4.307a11.95 11.95 0 015.814-5.519l2.74-1.22m0 0l-5.94-2.28m5.94 2.28l-2.28 5.941" />
+      </svg>
+    )
+  },
 ]
 
 export function HomePage() {
@@ -93,13 +117,18 @@ export function HomePage() {
         </div>
       </section>
 
-      {/* Stats Section */}
+      {/* Highlights Section */}
       <section className="rounded-2xl border border-border bg-card p-6 sm:p-8">
-        <div className="grid grid-cols-3 gap-4 text-center">
-          {stats.map((stat) => (
-            <div key={stat.label}>
-              <p className="text-2xl font-bold text-foreground sm:text-3xl">{stat.value}</p>
-              <p className="mt-1 text-xs text-muted-foreground sm:text-sm">{stat.label}</p>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          {highlights.map((item) => (
+            <div key={item.label} className="flex items-start gap-3">
+              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                {item.icon}
+              </div>
+              <div>
+                <p className="font-semibold text-foreground">{item.label}</p>
+                <p className="mt-0.5 text-sm text-muted-foreground">{item.description}</p>
+              </div>
             </div>
           ))}
         </div>
