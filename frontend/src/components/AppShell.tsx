@@ -78,6 +78,7 @@ export function AppShell({ session, onSignOut, children }: AppShellProps) {
             <nav className="hidden items-center md:flex">
               <NavLink to="/">Home</NavLink>
               <NavLink to="/critique">Critique</NavLink>
+              <NavLink to="/conversation">Chat</NavLink>
               <NavLink to="/portfolio">Portfolio</NavLink>
               <NavLink to="/history">History</NavLink>
               <NavLink to="/progress">Progress</NavLink>
@@ -130,6 +131,7 @@ export function AppShell({ session, onSignOut, children }: AppShellProps) {
             <nav className="divide-y divide-border">
               <MobileNavLink to="/" onClick={() => setMobileMenuOpen(false)}>Home</MobileNavLink>
               <MobileNavLink to="/critique" onClick={() => setMobileMenuOpen(false)}>Critique</MobileNavLink>
+              <MobileNavLink to="/conversation" onClick={() => setMobileMenuOpen(false)}>Chat</MobileNavLink>
               <MobileNavLink to="/portfolio" onClick={() => setMobileMenuOpen(false)}>Portfolio</MobileNavLink>
               <MobileNavLink to="/history" onClick={() => setMobileMenuOpen(false)}>History</MobileNavLink>
               <MobileNavLink to="/progress" onClick={() => setMobileMenuOpen(false)}>Progress</MobileNavLink>
