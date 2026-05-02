@@ -153,13 +153,36 @@ def _format_conversation_messages_for_prompt(messages: list[ConversationMessageR
 
 def _build_assistant_conversation_message(analysis: AnalysisResponse) -> str:
     """Store a compact assistant turn for short-term conversation memory."""
-    top_errors = ', '.join(str(item) for item in analysis.technical_errors[:3]) or 'none listed'
+    top_issues = ', '.join(item.title for item in analysis.prioritized_issues[:3]) or 'none listed'
+    top_gate = analysis.readiness_gate or 'none'
+    first_drill = analysis.targeted_drills[0].name if analysis.targeted_drills else 'none'
     return (
-        f'Summary: {analysis.summary}\n'
         f'Score: {analysis.score}/10\n'
-        f'Technical errors: {top_errors}\n'
-        f'Advice: {analysis.constructive_advice}'
+        f'Prioritized issues: {top_issues}\n'
+        f'Readiness gate: {top_gate}\n'
+        f'First drill: {first_drill}'
     )
+
+
+def _build_persistence_summary(analysis: AnalysisResponse) -> str:
+    """Derive a compact summary string for legacy persistence fields."""
+    if analysis.prioritized_issues:
+        ordered = sorted(analysis.prioritized_issues, key=lambda item: item.priority)
+        return '; '.join(f'{item.title}: {item.diagnosis}' for item in ordered[:2])
+    if analysis.rubric_anchors:
+        return '; '.join(analysis.rubric_anchors[:2])
+    return analysis.readiness_gate
+
+
+def _build_persistence_advice(analysis: AnalysisResponse) -> str:
+    """Derive practical advice text from targeted drills and readiness gate."""
+    if analysis.targeted_drills:
+        drills = ' '.join(
+            f'{item.name}: {item.objective}. Check: {item.success_check}.'
+            for item in analysis.targeted_drills[:2]
+        )
+        return f'{drills} Gate: {analysis.readiness_gate}'
+    return analysis.readiness_gate
 
 
 def _require_at_least_one_input(
@@ -281,7 +304,7 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
             user:       Authenticated user identity (from Supabase access token).
 
         Returns:
-            AnalysisResponse: JSON with summary, score, technical_errors, advice.
+            AnalysisResponse: JSON with score, ordered issues, drills, readiness gate, confidence.
 
         Raises:
             HTTPException 415: Unsupported file type.
@@ -496,10 +519,28 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                 artwork_filename = (file.filename if file is not None else None) or 'unknown'
                 row = cr_repo.create(
                     user_id=user.user_id,
-                    summary=analysis_result.summary,
+                    summary=_build_persistence_summary(analysis_result),
                     score=analysis_result.score,
-                    technical_errors=analysis_result.technical_errors,
-                    constructive_advice=analysis_result.constructive_advice,
+                    rubric_anchors=analysis_result.rubric_anchors,
+                    prioritized_issues=[
+                        {
+                            'title': item.title,
+                            'diagnosis': item.diagnosis,
+                            'priority': item.priority,
+                        }
+                        for item in analysis_result.prioritized_issues
+                    ],
+                    root_causes=analysis_result.root_causes,
+                    targeted_drills=[
+                        {
+                            'name': item.name,
+                            'objective': item.objective,
+                            'success_check': item.success_check,
+                        }
+                        for item in analysis_result.targeted_drills
+                    ],
+                    readiness_gate=analysis_result.readiness_gate,
+                    confidence=analysis_result.confidence,
                     tags=[],
                     goals_snapshot=profile_context_str,
                     conversation_id=active_conversation_id,
@@ -531,7 +572,7 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                     try:
                         dimension_scores = {
                             'overall_score_1_to_10': analysis_result.score,
-                            'technical_error_count': len(analysis_result.technical_errors),
+                            'prioritized_issue_count': len(analysis_result.prioritized_issues),
                         }
                         ProgressSnapshotRepository(sb, config.logger).create(
                             user_id=user.user_id,
@@ -540,7 +581,7 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                             rubric_version='1.0',
                             dimension_scores=dimension_scores,
                             aggregate_score=float(analysis_result.score),
-                            narrative=analysis_result.summary,
+                            narrative=_build_persistence_summary(analysis_result),
                         )
                         UserProgressRepository(sb, config.logger).upsert_after_critique(
                             user_id=user.user_id,

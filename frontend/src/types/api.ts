@@ -15,10 +15,25 @@ export type UserProfile = {
 }
 
 export type AnalysisResponse = {
-  summary: string
   score: number | null
-  technical_errors: string[]
-  constructive_advice: string
+  rubric_anchors: string[]
+  prioritized_issues: PrioritizedIssue[]
+  root_causes: string[]
+  targeted_drills: TargetedDrill[]
+  readiness_gate: string
+  confidence: number
+}
+
+export type PrioritizedIssue = {
+  title: string
+  diagnosis: string
+  priority: number
+}
+
+export type TargetedDrill = {
+  name: string
+  objective: string
+  success_check: string
 }
 
 export type ConversationInfo = {

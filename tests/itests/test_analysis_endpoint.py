@@ -13,19 +13,37 @@ from ule.artmentorai_project.models import AuthUser
 
 @dataclass
 class _DummyAnalysisResult:
-    summary: str
     score: int
-    technical_errors: list[str]
-    constructive_advice: str
+    rubric_anchors: list[str]
+    prioritized_issues: list[dict[str, str | int]]
+    root_causes: list[str]
+    targeted_drills: list[dict[str, str]]
+    readiness_gate: str
+    confidence: float
 
 
 class _FakeAgentService:
     def __init__(self, _config) -> None:
         self._result = _DummyAnalysisResult(
-            summary='Great structure with minor anatomy issues to improve.',
             score=7,
-            technical_errors=['arm proportion mismatch'],
-            constructive_advice='Run focused anatomy studies and compare with references.',
+            rubric_anchors=['Strong gesture rhythm'],
+            prioritized_issues=[
+                {
+                    'title': 'arm proportion mismatch',
+                    'diagnosis': 'Forearm is proportionally too long.',
+                    'priority': 1,
+                }
+            ],
+            root_causes=['Landmark checks were skipped'],
+            targeted_drills=[
+                {
+                    'name': 'Limb proportion block-in',
+                    'objective': 'Match limb units before rendering details.',
+                    'success_check': 'Arms stay within one head-length ratio tolerance.',
+                }
+            ],
+            readiness_gate='Fix limb construction before anatomy detailing.',
+            confidence=0.82,
         )
 
     async def analyze_image(self, **_kwargs):
@@ -98,9 +116,9 @@ def test_critique_returns_success_when_memory_or_db_dependencies_fail(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload['summary']
     assert payload['score'] is None
-    assert payload['technical_errors'] == ['arm proportion mismatch']
+    assert payload['prioritized_issues'][0]['title'] == 'arm proportion mismatch'
+    assert payload['targeted_drills'][0]['name'] == 'Limb proportion block-in'
 
 
 def test_critique_rejects_missing_inputs_with_422(app_config, monkeypatch) -> None:

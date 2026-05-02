@@ -44,10 +44,25 @@ def _build_service(agent) -> AgentService:
 def test_analyze_image_normalizes_dict_output_and_attaches_image() -> None:
     """Analyze flow should normalize dict output and include binary image content."""
     output_payload = {
-        'summary': 'Clean gesture and shape language with room to refine perspective.',
         'score': 7,
-        'technical_errors': ['inconsistent vanishing points'],
-        'constructive_advice': 'Practice box drills and plot vanishing points before details.',
+        'rubric_anchors': ['Clean gesture rhythm', 'Perspective drift in torso box'],
+        'prioritized_issues': [
+            {
+                'title': 'Torso perspective drift',
+                'diagnosis': 'Ribcage box rotates without a stable horizon.',
+                'priority': 1,
+            }
+        ],
+        'root_causes': ['Skipped construction lines'],
+        'targeted_drills': [
+            {
+                'name': 'Box rotation sheet',
+                'objective': 'Stabilize horizon handling.',
+                'success_check': '8/10 coherent boxes.',
+            }
+        ],
+        'readiness_gate': 'Advance only after stable construction perspective.',
+        'confidence': 0.84,
     }
     agent = _CapturingAgent(output_payload)
     service = _build_service(agent)

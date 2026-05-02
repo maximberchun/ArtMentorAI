@@ -6,6 +6,7 @@ import logging
 
 import pytest
 
+from ule.artmentorai_project.models.responses.analysis_response import AnalysisResponse
 from ule.artmentorai_project.services.vector_service import ArtCritique, VectorService, _score_to_level_estimate
 
 
@@ -66,17 +67,18 @@ def test_score_to_level_estimate_mapping(score: int, expected: int) -> None:
 
 
 def test_validate_critique_rejects_non_list_errors() -> None:
-    """Validation should reject critiques with non-list technical errors."""
+    """Validation should reject critiques with non-list prioritized issues."""
     service = _build_service()
     critique = ArtCritique(
         summary='Solid composition but weak anatomy',
         score=6,
-        technical_errors=['line quality'],
-        constructive_advice='Practice gesture drawing daily to improve flow and anatomy.',
+        prioritized_issues=['line quality'],
+        readiness_gate='Stabilize line confidence before stylization.',
+        drill_notes='Do 20 gesture thumbnails daily.',
     )
-    critique.technical_errors = 'not-a-list'
+    critique.prioritized_issues = 'not-a-list'
 
-    with pytest.raises(TypeError, match='technical_errors must be a list'):
+    with pytest.raises(TypeError, match='prioritized_issues must be a list'):
         service._validate_critique(critique)
 
 
@@ -86,8 +88,9 @@ def test_save_critique_returns_point_id_and_sends_payload() -> None:
     critique = ArtCritique(
         summary='Good silhouette and readable gesture',
         score=7,
-        technical_errors=['foreshortening inconsistency'],
-        constructive_advice='Use box primitives to anchor limbs before rendering details.',
+        prioritized_issues=['foreshortening inconsistency'],
+        readiness_gate='Correct limb construction before rendering details.',
+        drill_notes='Use box primitives to anchor limbs.',
     )
 
     point_id = service.save_critique(
@@ -115,8 +118,9 @@ def test_save_critique_wraps_unexpected_client_failures() -> None:
     critique = ArtCritique(
         summary='Strong value grouping but perspective drift',
         score=5,
-        technical_errors=['horizon mismatch'],
-        constructive_advice='Block perspective lines and check against one horizon.',
+        prioritized_issues=['horizon mismatch'],
+        readiness_gate='Lock horizon consistency before detail passes.',
+        drill_notes='Block perspective lines and check against one horizon.',
     )
 
     with pytest.raises(RuntimeError, match='Unexpected error in save_critique'):
@@ -153,3 +157,35 @@ def test_search_user_history_rejects_invalid_type_filter() -> None:
 
     with pytest.raises(ValueError, match='Invalid type filter'):
         service.search_user_history(user_id='user-1', type_filter='invalid-type')
+
+
+def test_art_critique_from_analysis_response_maps_structured_fields() -> None:
+    """Structured response fields should be transformed into vector critique text."""
+    response = AnalysisResponse(
+        score=8,
+        rubric_anchors=['Strong silhouette clarity'],
+        prioritized_issues=[
+            {
+                'title': 'Torso perspective drift',
+                'diagnosis': 'The torso box rotates off-horizon.',
+                'priority': 1,
+            }
+        ],
+        root_causes=['Skipped construction pass'],
+        targeted_drills=[
+            {
+                'name': 'Torso box drill',
+                'objective': 'Keep shared horizon alignment.',
+                'success_check': '8/10 boxes maintain perspective consistency.',
+            }
+        ],
+        readiness_gate='Advance to anatomy only after box perspective is stable.',
+        confidence=0.9,
+    )
+
+    critique = ArtCritique.from_analysis_response(response)
+
+    assert critique.summary.startswith('Torso perspective drift:')
+    assert critique.prioritized_issues == ['Torso perspective drift']
+    assert critique.readiness_gate == 'Advance to anatomy only after box perspective is stable.'
+    assert 'Torso box drill' in critique.drill_notes

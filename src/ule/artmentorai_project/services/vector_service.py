@@ -66,8 +66,9 @@ class ArtCritique:
         self,
         summary: str,
         score: int,
-        technical_errors: list[str],
-        constructive_advice: str,
+        prioritized_issues: list[str],
+        readiness_gate: str,
+        drill_notes: str,
         *,
         tags: list[str] | None = None,
         goals_snapshot: str | None = None,
@@ -77,15 +78,17 @@ class ArtCritique:
         Args:
             summary: Summary of the artwork analysis
             score: Score from 1-10
-            technical_errors: List of identified technical errors
-            constructive_advice: Constructive advice for improvement
+            prioritized_issues: List of prioritized issue titles
+            readiness_gate: Readiness gate statement
+            drill_notes: Flattened targeted drill recommendations
             tags: Optional tags (style, medium, subject, etc.)
             goals_snapshot: Optional short text snapshot of user goals at time of critique
         """
         self.summary = summary
         self.score = score
-        self.technical_errors = technical_errors
-        self.constructive_advice = constructive_advice
+        self.prioritized_issues = prioritized_issues
+        self.readiness_gate = readiness_gate
+        self.drill_notes = drill_notes
         self.tags = tags or []
         self.goals_snapshot = goals_snapshot
         self.timestamp = datetime.now(tz=UTC).isoformat()
@@ -94,11 +97,11 @@ class ArtCritique:
         """Get concatenated text for embedding generation.
 
         Returns:
-            str: Combined text of summary and technical errors
+            str: Combined text of summary and prioritized issue titles
         """
-        errors_text = ' '.join(self.technical_errors)
+        issues_text = ' '.join(self.prioritized_issues)
         tags_text = ' '.join(self.tags) if self.tags else ''
-        return f'{self.summary} {errors_text} {tags_text}'.strip()
+        return f'{self.summary} {issues_text} {self.readiness_gate} {tags_text}'.strip()
 
     def to_payload(self, filename: str, user_id: str) -> dict[str, Any]:
         """Build Qdrant payload for this critique (type=critique)."""
@@ -111,7 +114,7 @@ class ArtCritique:
             'filename': filename,
             'score': self.score,
             'summary': self.summary,
-            'advice': self.constructive_advice,
+            'advice': f'{self.drill_notes} Gate: {self.readiness_gate}'.strip(),
             'timestamp': self.timestamp,
             'tags': self.tags,
             'goals_snapshot': self.goals_snapshot or '',
@@ -137,10 +140,21 @@ class ArtCritique:
             ArtCritique: Initialized critique object
         """
         return cls(
-            summary=response.summary,
+            summary=(
+                '; '.join(
+                    f'{item.title}: {item.diagnosis}'
+                    for item in sorted(response.prioritized_issues, key=lambda item: item.priority)[:2]
+                )
+                or '; '.join(response.rubric_anchors[:2])
+                or response.readiness_gate
+            ),
             score=response.score,
-            technical_errors=response.technical_errors,
-            constructive_advice=response.constructive_advice,
+            prioritized_issues=[item.title for item in response.prioritized_issues],
+            readiness_gate=response.readiness_gate,
+            drill_notes=' '.join(
+                f'{item.name}: {item.objective}. Check: {item.success_check}.'
+                for item in response.targeted_drills[:2]
+            ),
             tags=tags,
             goals_snapshot=goals_snapshot,
         )
@@ -295,14 +309,14 @@ class VectorService:
         Raises:
             TypeError: If critique data is invalid
         """
-        # Validate technical_errors is a list
-        if not isinstance(critique.technical_errors, list):
-            msg = f'technical_errors must be a list, got {type(critique.technical_errors)}'
+        # Validate prioritized_issues is a list
+        if not isinstance(critique.prioritized_issues, list):
+            msg = f'prioritized_issues must be a list, got {type(critique.prioritized_issues)}'
             raise TypeError(msg)
 
         # Validate list contains only strings
-        if not all(isinstance(err, str) for err in critique.technical_errors):
-            msg = 'technical_errors must contain only strings'
+        if not all(isinstance(err, str) for err in critique.prioritized_issues):
+            msg = 'prioritized_issues must contain only strings'
             raise TypeError(msg)
 
     def save_critique(

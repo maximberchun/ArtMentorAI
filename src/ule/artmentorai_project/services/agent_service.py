@@ -15,10 +15,12 @@ from ..models import AnalysisResponse
 _BASE_PROMPT = (
     'Please analyze this artwork in detail and provide a structured critique.\n'
     'Be specific about:\n'
-    '- Identified technical strengths\n'
-    '- Concrete technical errors (anatomy, perspective, composition, etc.)\n'
+    '- Concrete prioritized issues with direct diagnosis\n'
+    '- Root causes behind the issues\n'
+    '- Targeted drills with success checks\n'
+    '- A readiness gate before advanced topics\n'
     '- A fair score from 1-10\n'
-    '- Practical advice for improvement\n\n'
+    '- Confidence from 0.0 to 1.0\n\n'
     'Respond ONLY in valid JSON format, without additional explanations.'
 )
 
@@ -28,9 +30,12 @@ _USER_CONTEXT_TEMPLATE = (
     'while also covering general technical aspects.\n\n'
     'Be specific about:\n'
     '- How well the user addressed their stated concerns\n'
-    '- Concrete technical errors (anatomy, perspective, composition, etc.)\n'
+    '- Concrete prioritized issues (with diagnosis and priority)\n'
+    '- Root causes behind the visible mistakes\n'
+    '- Targeted drills with success checks\n'
+    '- A readiness gate before advanced topics\n'
     '- A fair score from 1-10\n'
-    '- Practical and actionable advice for improvement\n\n'
+    '- Confidence from 0.0 to 1.0\n\n'
     'Respond ONLY in valid JSON format, without additional explanations.'
 )
 
@@ -111,10 +116,25 @@ class AgentService:
 
                     REQUIRED RESPONSE (JSON):
                     {
-                        "summary": "1-3 sentence summary of the general analysis",
                         "score": 7,
-                        "technical_errors": ["Error 1", "Error 2", ...],
-                        "constructive_advice": "Specific and actionable advice for improvement"
+                        "rubric_anchors": ["Anchor 1", "Anchor 2"],
+                        "prioritized_issues": [
+                            {
+                                "title": "Issue title",
+                                "diagnosis": "What is wrong and why",
+                                "priority": 1
+                            }
+                        ],
+                        "root_causes": ["Cause 1", "Cause 2"],
+                        "targeted_drills": [
+                            {
+                                "name": "Drill name",
+                                "objective": "What it trains",
+                                "success_check": "How to verify completion"
+                            }
+                        ],
+                        "readiness_gate": "What must be stable before advanced topics",
+                        "confidence": 0.82
                     }"""
 
         # Create agent
@@ -343,7 +363,7 @@ class AgentService:
             has_artwork: True when an image is provided in the request.
 
         Returns:
-            AnalysisResponse: Structured analysis with summary, score, errors, and advice.
+            AnalysisResponse: Structured analysis with pedagogical critique fields.
 
         Raises:
             ValueError: If there's an error calling Gemini or validating the response.

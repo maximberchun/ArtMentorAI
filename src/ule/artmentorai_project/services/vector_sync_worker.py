@@ -27,18 +27,42 @@ from .vector_service import ArtCritique, PortfolioRecord, VectorService
 from ..config import AppConfig
 
 
-def _technical_errors_as_str_list(raw: list[Any]) -> list[str]:
+def _issue_titles_as_str_list(raw: list[Any]) -> list[str]:
     if not isinstance(raw, list):
         return []
-    return [str(x) for x in raw]
+    titles: list[str] = []
+    for item in raw:
+        if isinstance(item, dict):
+            title = item.get('title')
+            if isinstance(title, str) and title.strip():
+                titles.append(title.strip())
+        elif isinstance(item, str) and item.strip():
+            titles.append(item.strip())
+    return titles
+
+
+def _targeted_drills_to_notes(raw: list[Any]) -> str:
+    if not isinstance(raw, list):
+        return ''
+    notes: list[str] = []
+    for item in raw[:2]:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get('name', '')).strip()
+        objective = str(item.get('objective', '')).strip()
+        success_check = str(item.get('success_check', '')).strip()
+        if name and objective:
+            notes.append(f'{name}: {objective}. Check: {success_check}.')
+    return ' '.join(notes)
 
 
 def _critique_from_row(row: CritiqueRow) -> ArtCritique:
     critique = ArtCritique(
         summary=row.summary,
         score=row.score,
-        technical_errors=_technical_errors_as_str_list(row.technical_errors),
-        constructive_advice=row.constructive_advice,
+        prioritized_issues=_issue_titles_as_str_list(row.prioritized_issues),
+        readiness_gate=row.readiness_gate,
+        drill_notes=_targeted_drills_to_notes(row.targeted_drills),
         tags=row.tags,
         goals_snapshot=row.goals_snapshot,
     )

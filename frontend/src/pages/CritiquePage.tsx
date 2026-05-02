@@ -137,15 +137,45 @@ export function CritiquePage() {
           ) : (
             <p className="font-medium">Score: {result.score}/10</p>
           )}
-          <p className="mt-1">{result.summary}</p>
-          {result.technical_errors.length > 0 && (
+          {result.rubric_anchors.length > 0 && (
             <ul className="mt-2 list-disc pl-5">
-              {result.technical_errors.map((item) => (
+              {result.rubric_anchors.map((item) => (
                 <li key={item}>{item}</li>
               ))}
             </ul>
           )}
-          <p className="mt-2 text-stone-700">{result.constructive_advice}</p>
+          {result.prioritized_issues.length > 0 && (
+            <div className="mt-3 space-y-2">
+              {result.prioritized_issues
+                .slice()
+                .sort((a, b) => a.priority - b.priority)
+                .map((item) => (
+                  <div key={`${item.title}-${item.priority}`}>
+                    <p className="font-medium">
+                      {item.priority}. {item.title}
+                    </p>
+                    <p className="text-stone-700">{item.diagnosis}</p>
+                  </div>
+                ))}
+            </div>
+          )}
+          {result.targeted_drills.length > 0 && (
+            <div className="mt-3">
+              <p className="font-medium">Targeted drills</p>
+              <ul className="mt-1 list-disc space-y-1 pl-5">
+                {result.targeted_drills.map((drill) => (
+                  <li key={drill.name}>
+                    <span className="font-medium">{drill.name}:</span> {drill.objective} (Check:{' '}
+                    {drill.success_check})
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <p className="mt-2 text-stone-700">Readiness gate: {result.readiness_gate}</p>
+          <p className="text-xs text-stone-500">
+            Confidence: {(result.confidence * 100).toFixed(0)}%
+          </p>
         </div>
       )}
       {conversation && (

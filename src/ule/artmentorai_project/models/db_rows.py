@@ -53,8 +53,12 @@ class CritiqueRow(BaseModel):
     artwork_filename: str | None = None
     summary: str
     score: int | None = None
-    technical_errors: list[Any] = Field(default_factory=list)
-    constructive_advice: str
+    rubric_anchors: list[Any] = Field(default_factory=list)
+    prioritized_issues: list[Any] = Field(default_factory=list)
+    root_causes: list[Any] = Field(default_factory=list)
+    targeted_drills: list[Any] = Field(default_factory=list)
+    readiness_gate: str = ''
+    confidence: float = 0.0
     tags: list[str] = Field(default_factory=list)
     goals_snapshot: str | None = None
     vector_point_id: str | None = None
