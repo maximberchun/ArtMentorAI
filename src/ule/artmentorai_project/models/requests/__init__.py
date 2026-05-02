@@ -11,4 +11,6 @@ client input. They should not contain business logic (`services`) or
 response definitions (`models.responses`).
 """
 
-__all__ = []
+from .conversation_chat_request import ConversationChatRequest
+
+__all__ = ['ConversationChatRequest']

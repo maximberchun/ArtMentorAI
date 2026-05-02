@@ -10,7 +10,7 @@ from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 
 from ..config import AppConfig
 from ..exceptions import AIServiceError
-from ..models import AnalysisResponse
+from ..models import AnalysisResponse, ConversationChatResponse
 
 _BASE_PROMPT = (
     'Analyze the artwork with objective pedagogy-first standards.\n'
@@ -86,6 +86,17 @@ _NO_ARTWORK_SCORING_SECTION = (
     'INSTRUCTION: Because there is no image, do not assign a numeric artwork score. '
     'Return `"score": null` and focus feedback on the provided text context only.'
 )
+
+_CHAT_SYSTEM_PROMPT = """You are an experienced studio art mentor for learners.
+Answer the user's question directly and usefully. Stay within visual art learning:
+fundamentals, practice methods, books and courses, tools and materials, and constructive
+study habits. You are not performing a structured artwork critique unless they uploaded an
+image elsewhere in the product—here you only converse.
+
+Use clear language; markdown lists and short headings are fine when they help readability.
+If the question is ambiguous, ask one brief clarifying question. If you are unsure of a
+fact, say so. Do not invent book titles or URLs; when web search is available, use it for
+factual recommendations or references."""
 
 _SUGGESTION_ORDER = {
     'foundation': 0,
@@ -224,11 +235,23 @@ class AgentService:
             system_prompt=system_prompt,
             retries=3,
         )
-        self._register_web_search_tool()
+        self._register_web_search_tool(self.agent)
+
+        chat_system = _CHAT_SYSTEM_PROMPT
+        if config.web_search_enabled:
+            chat_system += _WEB_SEARCH_SYSTEM_INSTRUCTIONS
+
+        self.chat_agent = Agent(
+            model=config.gemini.model_name,
+            output_type=ConversationChatResponse,
+            system_prompt=chat_system,
+            retries=3,
+        )
+        self._register_web_search_tool(self.chat_agent)
 
         self.logger.info('AgentService initialized successfully')
 
-    def _register_web_search_tool(self) -> None:
+    def _register_web_search_tool(self, target_agent: Agent) -> None:
         """Register a bounded web-search tool when enabled and configured."""
         if not self.config.web_search_enabled:
             return
@@ -239,13 +262,9 @@ class AgentService:
             )
             return
 
-        tool_decorator: Any = getattr(
-            self.agent,
-            'tool_plain',
-            None,
-        )
+        tool_decorator: Any = getattr(target_agent, 'tool_plain', None)
         if tool_decorator is None:
-            tool_decorator = getattr(self.agent, 'tool', None)
+            tool_decorator = getattr(target_agent, 'tool', None)
         if tool_decorator is None:
             self.logger.warning('Current PydanticAI Agent implementation has no tool decorator.')
             return
@@ -410,6 +429,25 @@ class AgentService:
         if past_critiques and past_critiques.strip():
             prompt += _PAST_CRITIQUES_SECTION.format(past_critiques=past_critiques.strip())
 
+        return prompt
+
+    @staticmethod
+    def _build_chat_user_turn(
+        user_input: str,
+        profile_context: str | None,
+        conversation_context: str | None,
+    ) -> str:
+        """User-side prompt for general Q&A (no artwork critique schema)."""
+        prompt = (
+            f'USER QUESTION:\n{user_input.strip()}\n\n'
+            'Answer in the structured output; put the full answer in `reply`.'
+        )
+        if profile_context and profile_context.strip():
+            prompt += _PROFILE_CONTEXT_SECTION.format(profile_context=profile_context.strip())
+        if conversation_context and conversation_context.strip():
+            prompt += _CONVERSATION_CONTEXT_SECTION.format(
+                conversation_context=conversation_context.strip(),
+            )
         return prompt
 
     @staticmethod
@@ -605,6 +643,75 @@ class AgentService:
         except Exception as e:
             self.logger.exception('Error analyzing image')
             msg = f'Gemini image analysis error: {e!s}'
+            raise ValueError(msg) from e
+
+    async def answer_conversation(
+        self,
+        user_input: str,
+        profile_context: str | None = None,
+        conversation_context: str | None = None,
+    ) -> ConversationChatResponse:
+        """Answer a general art-learning question (no structured critique output)."""
+        try:
+            self._search_calls_used = 0
+            prompt = self._build_chat_user_turn(
+                user_input,
+                profile_context,
+                conversation_context,
+            )
+            self.logger.info(
+                'Starting conversation chat with Gemini %s',
+                self.config.gemini.model_name,
+            )
+            result = await asyncio.wait_for(
+                self.chat_agent.run(prompt),
+                timeout=self._MODEL_RUN_TIMEOUT_SECONDS,
+            )
+            chat_data = result.output
+            if not isinstance(chat_data, ConversationChatResponse):
+                if isinstance(chat_data, dict):
+                    chat_data = ConversationChatResponse(**chat_data)
+                elif hasattr(chat_data, 'model_dump'):
+                    chat_data = ConversationChatResponse(**chat_data.model_dump())
+                else:
+                    chat_data = ConversationChatResponse.model_validate(chat_data)
+            return chat_data  # noqa: TRY300
+        except ModelHTTPError as e:
+            self.logger.error('Gemini API error: %s (status=%s)', e.message, e.status_code)
+            if e.status_code == 429:
+                retry_after = self._extract_retry_delay(e.body)
+                raise AIServiceError(
+                    message='AI service quota exceeded. Please wait a moment before trying again.',
+                    error_code='QUOTA_EXCEEDED',
+                    retry_after=retry_after,
+                ) from e
+            if e.status_code == 503:
+                raise AIServiceError(
+                    message='AI service is temporarily unavailable. Please try again later.',
+                    error_code='SERVICE_UNAVAILABLE',
+                ) from e
+            raise AIServiceError(
+                message=f'AI service error: {e.message}',
+                error_code='API_ERROR',
+            ) from e
+        except UnexpectedModelBehavior as e:
+            self.logger.error('AI model output validation failed: %s', e.message)
+            raise AIServiceError(
+                message='AI response format invalid. Please try again.',
+                error_code='OUTPUT_VALIDATION_ERROR',
+            ) from e
+        except TimeoutError as e:
+            self.logger.error(
+                'Gemini request timed out after %ss',
+                self._MODEL_RUN_TIMEOUT_SECONDS,
+            )
+            raise AIServiceError(
+                message='AI request timed out. Please try again.',
+                error_code='TIMEOUT',
+            ) from e
+        except Exception as e:
+            self.logger.exception('Error in conversation chat')
+            msg = f'Gemini conversation error: {e!s}'
             raise ValueError(msg) from e
 
     @staticmethod
