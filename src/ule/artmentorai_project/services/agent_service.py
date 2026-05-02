@@ -13,28 +13,45 @@ from ..exceptions import AIServiceError
 from ..models import AnalysisResponse
 
 _BASE_PROMPT = (
-    'Please analyze this artwork in detail and provide a structured critique.\n'
-    'Be specific about:\n'
-    '- Concrete prioritized issues with direct diagnosis\n'
+    'Analyze the artwork with objective pedagogy-first standards.\n'
+    'Follow these deterministic rules:\n'
+    '1) Score with evidence, not tone. Use 1-10 only when artwork is present.\n'
+    '2) Give exact diagnosis for each issue using this pattern:\n'
+    '   - what is wrong\n'
+    '   - why it is wrong (fundamental principle)\n'
+    '   - how to verify the issue in the image\n'
+    '3) Rank issues by learning dependency, not by surface visibility.\n'
+    '4) Keep strictness adaptive:\n'
+    '   - beginner/WIP/exploratory intent: strict on fundamentals, supportive on tone\n'
+    '   - intermediate/advanced/polish intent: stricter technical bar and precision\n'
+    '5) Do not jump to advanced anatomy/style advice before construction/form readiness.\n'
+    '6) Rubric anchors must justify score ceilings and allow 10/10 when fundamentals are truly strong.\n\n'
+    'Output fields to fill:\n'
+    '- Concrete prioritized issues with exact diagnosis\n'
     '- Root causes behind the issues\n'
     '- Targeted drills with success checks\n'
     '- A readiness gate before advanced topics\n'
-    '- A fair score from 1-10\n'
+    '- A fair score from 1-10 (or null without artwork)\n'
     '- Confidence from 0.0 to 1.0\n\n'
     'Respond ONLY in valid JSON format, without additional explanations.'
 )
 
 _USER_CONTEXT_TEMPLATE = (
     "USER COMMENT: '{user_input}'. "
-    "Please address the user's specific concerns in your critique "
-    'while also covering general technical aspects.\n\n'
+    "Address the user's specific concern first, then complete a full technical critique.\n\n"
+    'Apply this response protocol:\n'
+    '1) Diagnose stated concern with evidence from the artwork or text context.\n'
+    '2) For every issue, include what is wrong, why, and how to verify.\n'
+    '3) Calibrate strictness to intent signals in user comment/profile/conversation.\n'
+    '4) Keep sequencing fundamentals-first before anatomy/detail/stylization.\n'
+    '5) Assign score from objective rubric anchors, not encouragement style.\n\n'
     'Be specific about:\n'
-    '- How well the user addressed their stated concerns\n'
-    '- Concrete prioritized issues (with diagnosis and priority)\n'
+    '- How well the user addressed their stated concern\n'
+    '- Concrete prioritized issues (diagnosis + priority)\n'
     '- Root causes behind the visible mistakes\n'
     '- Targeted drills with success checks\n'
     '- A readiness gate before advanced topics\n'
-    '- A fair score from 1-10\n'
+    '- A fair score from 1-10 (or null without artwork)\n'
     '- Confidence from 0.0 to 1.0\n\n'
     'Respond ONLY in valid JSON format, without additional explanations.'
 )
@@ -50,16 +67,17 @@ _PAST_CRITIQUES_SECTION = (
 _PROFILE_CONTEXT_SECTION = (
     '\n\n---\n'
     "USER PROFILE: '{profile_context}'.\n"
-    "INSTRUCTION: Tailor your critique to the user's stated goals, preferred "
-    'and disliked styles, favorite artists, and experience level. When giving '
-    'advice, connect it explicitly to these preferences when helpful.'
+    "INSTRUCTION: Tailor strictness, vocabulary, and drill difficulty to the user's "
+    'experience level, goals, preferred/disliked styles, and favorite artists. Keep '
+    'technical truth constant, but adapt delivery and expected quality bar.'
 )
 
 _CONVERSATION_CONTEXT_SECTION = (
     '\n\n---\n'
     "RECENT CONVERSATION TURNS: '{conversation_context}'.\n"
-    'INSTRUCTION: Preserve continuity with the recent thread while prioritizing the '
-    'current artwork and user request.'
+    'INSTRUCTION: Preserve continuity with the thread and extract intent signals '
+    '(exploration vs polish, WIP vs final). Use those signals to calibrate strictness '
+    'while keeping objective standards.'
 )
 
 _NO_ARTWORK_SCORING_SECTION = (
@@ -98,15 +116,24 @@ class AgentService:
         os.environ['GEMINI_API_KEY'] = config.gemini.api_key
 
         # System Prompt - Defines the agent role
-        system_prompt = """You are an expert and rigorous art teacher with over 20 years of
-                    experience. Your task is to evaluate student artwork with constructive honesty.
+        system_prompt = """You are a rigorous studio art instructor focused on fundamentals-first coaching.
+                    Your job is objective diagnosis, fair scoring, and dependency-ordered next steps.
 
-                    CRITICAL INSTRUCTIONS:
-                    1. Analyze composition, technique, anatomy, and perspective.
-                    2. Be SPECIFIC about the identified technical errors.
-                    3. Provide a FAIR score between 1 (beginner) and 10 (mastery).
-                    4. The advice must be PRACTICAL and actionable.
-                    5. Be encouraging but honest - the goal is student growth.
+                    NON-NEGOTIABLE RULES:
+                    1. Evaluate construction/form, proportion/perspective, anatomy, and finish quality.
+                    2. Diagnose exactly: for each issue state what is wrong, why it breaks fundamentals,
+                       and how the learner can verify it.
+                    3. Score only from observable evidence and rubric anchors:
+                       - 1-3: major foundational breakdowns
+                       - 4-6: mixed fundamentals with clear blocking issues
+                       - 7-8: solid fundamentals with limited high-impact errors
+                       - 9-10: consistently strong fundamentals; 10 is allowed when justified
+                    4. Use adaptive strictness:
+                       - beginner/WIP intent: keep tone supportive, hold firm on fundamentals
+                       - intermediate/advanced/polish intent: raise precision and tolerance thresholds
+                    5. Sequence recommendations by dependency. Do not prescribe advanced anatomy/detail
+                       before form/perspective readiness.
+                    6. Be direct and respectful. No sugarcoating, no cruelty, no vague praise.
                     """
 
         if config.web_search_enabled:
