@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from pydantic import ValidationError
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from ..config import AppConfig
@@ -304,7 +305,18 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR0
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f'Failed to retrieve history: {e!s}',
             ) from e
-        return [PortfolioHistoryItem.model_validate(r) for r in raw]
+        validated: list[PortfolioHistoryItem] = []
+        for i, row in enumerate(raw):
+            try:
+                validated.append(PortfolioHistoryItem.model_validate(row))
+            except ValidationError as err:
+                config.logger.warning(
+                    'Skipping invalid portfolio history row index=%s user_id=%s: %s',
+                    i,
+                    user.user_id,
+                    err,
+                )
+        return validated
 
     @router.get(
         '/item/{item_id}',

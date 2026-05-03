@@ -205,6 +205,62 @@ def test_portfolio_history_me_returns_items(app_config, monkeypatch, token_auth_
     assert response.json()[0]['type'] == 'portfolio_item'
 
 
+def test_portfolio_history_me_skips_rows_that_fail_response_validation(
+    app_config, monkeypatch, token_auth_stub
+) -> None:
+    """One invalid Qdrant payload must not return 500 for the whole history list."""
+
+    class _FakeVectorService:
+        def search_user_history(self, **_kwargs):
+            return [
+                {
+                    'id': 'bad-critique',
+                    'type': 'critique',
+                    'user_id': 'user-123',
+                    'filename': 'bad.jpg',
+                    'score': 99,
+                    'timestamp': '2020-01-01T00:00:00Z',
+                },
+                {
+                    'id': 'good-item',
+                    'type': 'portfolio_item',
+                    'user_id': 'user-123',
+                    'filename': 'ok.png',
+                    'tags': [],
+                },
+            ]
+
+        def get_point_by_id(self, *_args, **_kwargs):
+            return None
+
+    class _FakeStorageService:
+        def __init__(self, _config) -> None:
+            pass
+
+        def create_signed_url(self, path: str) -> str:
+            return f'https://cdn.example/{path}'
+
+    monkeypatch.setattr(
+        'ule.artmentorai_project.endpoints.portfolio.get_vector_service',
+        lambda _config: _FakeVectorService(),
+    )
+    monkeypatch.setattr(
+        'ule.artmentorai_project.endpoints.portfolio.StorageService',
+        _FakeStorageService,
+    )
+
+    app = FastAPI()
+    app.include_router(create_portfolio_router(app_config))
+    client = TestClient(app)
+
+    response = client.get('/portfolio/history/me', headers={'Authorization': 'Bearer valid-token'})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]['id'] == 'good-item'
+
+
 def test_portfolio_history_me_rejects_invalid_limit(app_config, monkeypatch, token_auth_stub) -> None:
     """Query params should enforce configured validation constraints."""
 
