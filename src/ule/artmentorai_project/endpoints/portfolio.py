@@ -6,10 +6,7 @@ This module provides REST endpoints for:
 - Retrieving a single item by ID
 """
 
-import json
-import time
 from collections.abc import Awaitable, Callable
-from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
@@ -31,26 +28,6 @@ from ..utils.upload_validation import (
 
 _bearer = HTTPBearer(auto_error=True)
 
-_AGENT_DEBUG_LOG = Path(__file__).resolve().parents[4] / 'debug-42e153.log'
-
-
-def _agent_debug_log(*, location: str, message: str, data: dict, hypothesis_id: str) -> None:
-    # #region agent log
-    try:
-        payload = {
-            'sessionId': '42e153',
-            'location': location,
-            'message': message,
-            'data': data,
-            'timestamp': int(time.time() * 1000),
-            'hypothesisId': hypothesis_id,
-        }
-        with _AGENT_DEBUG_LOG.open('a', encoding='utf-8') as log_f:
-            log_f.write(json.dumps(payload, default=str) + '\n')
-    except OSError:
-        pass
-    # #endregion
-
 
 def _build_current_user_dependency(config: AppConfig) -> Callable[..., Awaitable[AuthUser]]:
     auth = AuthService(config)
@@ -65,34 +42,9 @@ def _build_current_user_dependency(config: AppConfig) -> Callable[..., Awaitable
 
 def get_vector_service(config: AppConfig) -> VectorService | None:
     """Get VectorService; returns None if Qdrant is unavailable."""
-    # #region agent log
-    _agent_debug_log(
-        location='portfolio.py:get_vector_service:entry',
-        message='get_vector_service called',
-        data={},
-        hypothesis_id='H1',
-    )
-    # #endregion
     try:
-        svc = VectorService(config=config, logger=config.logger)
-        # #region agent log
-        _agent_debug_log(
-            location='portfolio.py:get_vector_service:ok',
-            message='VectorService constructed',
-            data={'ok': True},
-            hypothesis_id='H1',
-        )
-        # #endregion
-        return svc
+        return VectorService(config=config, logger=config.logger)
     except RuntimeError as init_error:
-        # #region agent log
-        _agent_debug_log(
-            location='portfolio.py:get_vector_service:runtime_error',
-            message='VectorService init failed',
-            data={'error': str(init_error)[:500]},
-            hypothesis_id='H1',
-        )
-        # #endregion
         config.logger.warning(
             'VectorService unavailable: %s. Portfolio endpoints will fail.',
             str(init_error),
@@ -204,14 +156,6 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR0
     try:
         vector_service: VectorService | None = get_vector_service(config)
     except Exception:
-        # #region agent log
-        _agent_debug_log(
-            location='portfolio.py:create_portfolio_router:vector_exception',
-            message='get_vector_service raised non-RuntimeError',
-            data={},
-            hypothesis_id='H2',
-        )
-        # #endregion
         config.logger.exception('Failed to get vector service')
         vector_service = None
     try:
@@ -221,28 +165,8 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR0
         storage_service = None
     current_user = _build_current_user_dependency(config)
 
-    # #region agent log
-    _agent_debug_log(
-        location='portfolio.py:create_portfolio_router:services',
-        message='router dependency services after init',
-        data={
-            'vector_service_is_none': vector_service is None,
-            'storage_service_is_none': storage_service is None,
-        },
-        hypothesis_id='H2',
-    )
-    # #endregion
-
     def _require_vector_service() -> VectorService:
         if vector_service is None:
-            # #region agent log
-            _agent_debug_log(
-                location='portfolio.py:_require_vector_service',
-                message='503 Portfolio storage unavailable',
-                data={'branch': 'vector_service_none'},
-                hypothesis_id='H4',
-            )
-            # #endregion
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail='Portfolio storage is temporarily unavailable.',
@@ -251,14 +175,6 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR0
 
     def _require_storage_service() -> StorageService:
         if storage_service is None:
-            # #region agent log
-            _agent_debug_log(
-                location='portfolio.py:_require_storage_service',
-                message='503 Image storage unavailable',
-                data={'branch': 'storage_service_none'},
-                hypothesis_id='H3',
-            )
-            # #endregion
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail='Image storage is temporarily unavailable.',
@@ -373,14 +289,6 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR0
             Query(description='Filter by type: critique or portfolio_item'),
         ] = None,
     ) -> list[PortfolioHistoryItem]:
-        # #region agent log
-        _agent_debug_log(
-            location='portfolio.py:get_history:entry',
-            message='get_history handler entered',
-            data={'limit': limit, 'type_filter': type_filter},
-            hypothesis_id='H5',
-        )
-        # #endregion
         svc = _require_vector_service()
         storage = _require_storage_service()
         try:
