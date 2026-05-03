@@ -26,6 +26,7 @@ export type AnalysisResponse = {
 
 export type ConversationChatResponse = {
   reply: string
+  analysis?: AnalysisResponse | null
 }
 
 export type PrioritizedIssue = {

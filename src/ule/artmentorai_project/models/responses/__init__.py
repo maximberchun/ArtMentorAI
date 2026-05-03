@@ -13,12 +13,14 @@ to the client. They should remain independent from request validation
 
 from .analysis_response import AnalysisResponse
 from .conversation_chat_response import ConversationChatResponse
+from .conversation_turn_intent import ConversationTurnIntent
 from .portfolio_response import PortfolioHistoryItem, PortfolioUploadResponse
 from .progress_response import ProgressMeResponse, ProgressSnapshotSummary
 
 __all__ = [
     'AnalysisResponse',
     'ConversationChatResponse',
+    'ConversationTurnIntent',
     'PortfolioHistoryItem',
     'PortfolioUploadResponse',
     'ProgressMeResponse',

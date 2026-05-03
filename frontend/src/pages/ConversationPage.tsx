@@ -1,6 +1,5 @@
 import { FormEvent, useState, useRef, useEffect } from 'react'
 import { apiFetch, apiJson } from '../lib/api'
-import { isTextOnlyCritiqueIntent } from '../lib/conversationIntent'
 import { AnalysisResponse, ConversationChatResponse, ConversationInfo } from '../types/api'
 
 interface ChatMessage {
@@ -106,9 +105,7 @@ export function ConversationPage() {
     try {
       const conversationId = await ensureConversation()
 
-      const useCritique =
-        currentFile !== null ||
-        (currentInput.trim().length > 0 && isTextOnlyCritiqueIntent(currentInput))
+      const useCritique = currentFile !== null
 
       if (!useCritique && currentInput.trim()) {
         const chatPayload = await apiJson<ConversationChatResponse>('/analysis/chat', {
@@ -118,13 +115,23 @@ export function ConversationPage() {
             conversation_id: conversationId,
           }),
         })
-        const assistantMessage: ChatMessage = {
-          id: `assistant-${Date.now()}`,
-          role: 'assistant',
-          content: chatPayload.reply,
-          timestamp: new Date(),
-          assistantKind: 'chat',
-        }
+        const assistantMessage: ChatMessage =
+          chatPayload.analysis != null
+            ? {
+                id: `assistant-${Date.now()}`,
+                role: 'assistant',
+                content: formatCritiqueResponse(chatPayload.analysis),
+                timestamp: new Date(),
+                analysis: chatPayload.analysis,
+                assistantKind: 'critique',
+              }
+            : {
+                id: `assistant-${Date.now()}`,
+                role: 'assistant',
+                content: chatPayload.reply,
+                timestamp: new Date(),
+                assistantKind: 'chat',
+              }
         setChatMessages(prev => [...prev, assistantMessage])
       } else {
         const formData = new FormData()

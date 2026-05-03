@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from ule.artmentorai_project.endpoints.analysis import create_analysis_router
-from ule.artmentorai_project.models import AuthUser, ConversationChatResponse
+from ule.artmentorai_project.models import AuthUser, ConversationChatResponse, ConversationTurnIntent
 
 
 @dataclass
@@ -56,6 +56,14 @@ class _FakeAgentService:
                 'a basic perspective text; match the book to your medium and goals.'
             ),
         )
+
+    async def classify_conversation_turn(self, user_input: str, conversation_context: str | None = None):
+        from ule.artmentorai_project.utils.conversation_intent import is_text_only_critique_intent
+
+        _ = conversation_context
+        if is_text_only_critique_intent(user_input):
+            return ConversationTurnIntent(mode='critique')
+        return ConversationTurnIntent(mode='question_answering')
 
 
 class _FakeProfileService:
@@ -173,8 +181,8 @@ def test_chat_returns_reply_for_general_question(app_config, monkeypatch) -> Non
     assert 'Betty Edwards' in payload['reply']
 
 
-def test_chat_rejects_critique_shaped_message_with_422(app_config, monkeypatch) -> None:
-    """Critique-intent text should be directed to /analysis/critique, not /chat."""
+def test_chat_routes_critique_intent_via_classifier(app_config, monkeypatch) -> None:
+    """Classifier may route critique-shaped text through structured critique (same as /critique)."""
     client = _build_analysis_client(app_config, monkeypatch)
 
     response = client.post(
@@ -183,5 +191,10 @@ def test_chat_rejects_critique_shaped_message_with_422(app_config, monkeypatch) 
         headers={'Authorization': 'Bearer valid-token'},
     )
 
-    assert response.status_code == 422
-    assert 'artwork feedback' in response.json()['detail'].lower()
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload.get('analysis') is not None
+    # Text-only critique clears numeric score in the shared pipeline (same as /critique).
+    assert payload['analysis']['score'] is None
+    assert len(payload['analysis']['prioritized_issues']) >= 1
+    assert 'reply' in payload

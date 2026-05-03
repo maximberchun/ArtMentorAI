@@ -10,7 +10,7 @@ class ConversationChatRequest(BaseModel):
         ...,
         min_length=1,
         max_length=8000,
-        description='User question or message (not artwork critique requests).',
+        description='User message; the server classifies critique vs general Q&A.',
     )
     conversation_id: str | None = Field(
         default=None,

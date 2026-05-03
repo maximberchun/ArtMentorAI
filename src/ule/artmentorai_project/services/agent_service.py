@@ -10,7 +10,7 @@ from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 
 from ..config import AppConfig
 from ..exceptions import AIServiceError
-from ..models import AnalysisResponse, ConversationChatResponse
+from ..models import AnalysisResponse, ConversationChatResponse, ConversationTurnIntent
 
 _BASE_PROMPT = (
     'Analyze the artwork with objective pedagogy-first standards.\n'
@@ -97,6 +97,23 @@ Use clear language; markdown lists and short headings are fine when they help re
 If the question is ambiguous, ask one brief clarifying question. If you are unsure of a
 fact, say so. Do not invent book titles or URLs; when web search is available, use it for
 factual recommendations or references."""
+
+_INTENT_CLASSIFIER_PROMPT = """You classify one user message for an art-mentoring conversation.
+
+question_answering — General learning only: study methods, books, tools, materials, art history,
+how a concept works, exercises explained in general, theory. The user is not asking for
+structured feedback on their own specific artwork.
+
+critique — They want feedback on THEIR work: something they made or are making (even if only
+described in text), "what's wrong with this/my…", rate/review/roast my piece, how to improve
+this drawing/painting they are working on, portfolio-style review of their execution.
+
+Use RECENT CONVERSATION only to resolve pronouns ("it", "this") or when the thread is clearly
+continuing feedback on the same piece — then prefer critique for short follow-ups.
+
+If ambiguous, choose question_answering.
+
+Respond only with the structured output fields."""
 
 _SUGGESTION_ORDER = {
     'foundation': 0,
@@ -248,6 +265,13 @@ class AgentService:
             retries=3,
         )
         self._register_web_search_tool(self.chat_agent)
+
+        self.intent_agent = Agent(
+            model=config.gemini.model_name,
+            output_type=ConversationTurnIntent,
+            system_prompt=_INTENT_CLASSIFIER_PROMPT,
+            retries=2,
+        )
 
         self.logger.info('AgentService initialized successfully')
 
@@ -449,6 +473,17 @@ class AgentService:
                 conversation_context=conversation_context.strip(),
             )
         return prompt
+
+    @staticmethod
+    def _build_intent_user_turn(
+        user_input: str,
+        conversation_context: str | None,
+    ) -> str:
+        parts = [f'MESSAGE TO CLASSIFY:\n{user_input.strip()}\n']
+        if conversation_context and conversation_context.strip():
+            parts.append(f'RECENT CONVERSATION:\n{conversation_context.strip()}\n')
+        parts.append('Classify this message.')
+        return '\n'.join(parts)
 
     @staticmethod
     def _infer_suggestion_stage(text: str) -> str:
@@ -675,6 +710,8 @@ class AgentService:
                     chat_data = ConversationChatResponse(**chat_data.model_dump())
                 else:
                     chat_data = ConversationChatResponse.model_validate(chat_data)
+            if chat_data.analysis is not None:
+                chat_data = chat_data.model_copy(update={'analysis': None})
             return chat_data  # noqa: TRY300
         except ModelHTTPError as e:
             self.logger.error('Gemini API error: %s (status=%s)', e.message, e.status_code)
@@ -713,6 +750,38 @@ class AgentService:
             self.logger.exception('Error in conversation chat')
             msg = f'Gemini conversation error: {e!s}'
             raise ValueError(msg) from e
+
+    async def classify_conversation_turn(
+        self,
+        user_input: str,
+        conversation_context: str | None = None,
+    ) -> ConversationTurnIntent:
+        """Decide whether a text turn should use structured critique or general Q&A."""
+        from ..utils.conversation_intent import is_text_only_critique_intent
+
+        prompt = self._build_intent_user_turn(user_input, conversation_context)
+        try:
+            self.logger.info(
+                'Classifying conversation turn with Gemini %s',
+                self.config.gemini.model_name,
+            )
+            result = await asyncio.wait_for(
+                self.intent_agent.run(prompt),
+                timeout=self._MODEL_RUN_TIMEOUT_SECONDS,
+            )
+            data = result.output
+            if not isinstance(data, ConversationTurnIntent):
+                if isinstance(data, dict):
+                    data = ConversationTurnIntent(**data)
+                elif hasattr(data, 'model_dump'):
+                    data = ConversationTurnIntent(**data.model_dump())
+                else:
+                    data = ConversationTurnIntent.model_validate(data)
+            return data  # noqa: TRY300
+        except Exception as e:
+            self.logger.warning('Intent classification failed (%s); using keyword fallback', str(e))
+            mode = 'critique' if is_text_only_critique_intent(user_input) else 'question_answering'
+            return ConversationTurnIntent(mode=mode)
 
     @staticmethod
     def _extract_retry_delay(body: dict) -> float | None:

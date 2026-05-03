@@ -29,7 +29,6 @@ from ..repositories import (
 from ..repositories.vector_sync_job_repository import ENTITY_CRITIQUE, OP_UPSERT
 from ..services import AgentService, ProfileService, StorageService
 from ..services.vector_service import ArtCritique, VectorService
-from ..utils.conversation_intent import is_text_only_critique_intent
 from ..utils.upload_validation import (
     validate_file_size,
     validate_image_content_type,
@@ -236,6 +235,385 @@ def _require_at_least_one_input(
         )
 
 
+async def execute_critique_request(
+    *,
+    config: AppConfig,
+    agent_service: AgentService,
+    profile_service: ProfileService,
+    vector_service: VectorService | None,
+    storage_service: StorageService | None,
+    user: AuthUser,
+    file: UploadFile | None,
+    user_input: str | None,
+    conversation_id: str | None,
+) -> AnalysisResponse:
+    """Shared critique pipeline for /analysis/critique and AI-routed chat turns."""
+    _require_at_least_one_input(file=file, user_input=user_input)
+
+    try:
+        # File validation
+        image_bytes: bytes | None = None
+        mime_type: str | None = None
+        image_path: str | None = None
+
+        if file is not None:
+            mime_type = validate_image_content_type(file.content_type)
+
+            image_bytes = await file.read()
+
+            validate_file_size(image_bytes, config.upload.max_file_size_mb)
+
+            _extension, mime_type = validate_image_file(
+                filename=file.filename or 'unknown',
+                content_type=mime_type,
+                config=config,
+            )
+            if storage_service is not None and image_bytes is not None:
+                try:
+                    image_path = storage_service.upload_image(
+                        user_id=user.user_id,
+                        image_bytes=image_bytes,
+                        filename=file.filename or 'unknown',
+                        mime_type=mime_type,
+                    )
+                except RuntimeError as storage_error:
+                    config.logger.warning(
+                        'Image upload failed for user_id=%s: %s. '
+                        'Continuing without persisted image reference.',
+                        user.user_id,
+                        str(storage_error),
+                    )
+
+        # Log the request with context
+        config.logger.info(
+            'Analyzing input — file: %s | user_input: %s | user_id: %s',
+            file.filename if file else 'none',
+            'yes' if user_input else 'none',
+            user.user_id,
+        )
+
+        past_critiques_str: str | None = None
+        portfolio_context_str: str | None = None
+        conversation_context_str: str | None = None
+        active_conversation_id = (
+            conversation_id.strip() if conversation_id and conversation_id.strip() else None
+        )
+        if active_conversation_id:
+            try:
+                sb_for_conversation = create_sync_supabase_service_client(config)
+                conversation_repo = ConversationRepository(sb_for_conversation, config.logger)
+                conversation_message_repo = ConversationMessageRepository(
+                    sb_for_conversation,
+                    config.logger,
+                )
+                conversation = conversation_repo.get_active_for_user(
+                    active_conversation_id,
+                    user.user_id,
+                )
+                if conversation is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail='Conversation not found.',
+                    )
+                recent_messages = conversation_message_repo.list_recent_for_conversation(
+                    conversation_id=active_conversation_id,
+                    user_id=user.user_id,
+                    limit=8,
+                )
+                conversation_context_str = _format_conversation_messages_for_prompt(
+                    recent_messages
+                )
+            except RuntimeError as conversation_error:
+                config.logger.warning(
+                    'Conversation lookup failed for user_id=%s conversation_id=%s: %s. '
+                    'Proceeding without short-term conversation memory.',
+                    user.user_id,
+                    active_conversation_id,
+                    str(conversation_error),
+                )
+
+        if vector_service is not None:
+            try:
+                # Use the user's own comment as the semantic query when
+                # available; fall back to a generic drawing-error query so
+                # we always attempt to surface relevant history.
+                memory_query = (
+                    user_input.strip()
+                    if user_input and user_input.strip()
+                    else 'technical drawing errors anatomy perspective'
+                )
+                past_records = vector_service.search_similar_critiques(
+                    query_text=memory_query,
+                    user_id=user.user_id,
+                )
+                if past_records:
+                    past_critiques_str = (
+                        ''.join(
+                            f'- Summary: {r["summary"]} | Advice: {r["advice"]}'
+                            for r in past_records
+                            if r.get('summary') or r.get('advice')
+                        )
+                        or None
+                    )  # collapse to None if every record had empty fields
+                    config.logger.debug(
+                        'Injecting %d past critique(s) into prompt for user_id=%s',
+                        len(past_records),
+                        user.user_id,
+                    )
+                else:
+                    config.logger.debug(
+                        'No past critiques found for user_id=%s — proceeding without memory',
+                        user.user_id,
+                    )
+
+                portfolio_neighbors = vector_service.search_similar_portfolio_items(
+                    query_text=memory_query,
+                    user_id=user.user_id,
+                )
+                if portfolio_neighbors:
+                    portfolio_context_str = _format_portfolio_neighbors_for_prompt(
+                        portfolio_neighbors
+                    )
+                    config.logger.debug(
+                        'Injecting %d portfolio neighbor(s) into prompt for user_id=%s',
+                        len(portfolio_neighbors),
+                        user.user_id,
+                    )
+                else:
+                    config.logger.debug(
+                        'No portfolio neighbors found for user_id=%s',
+                        user.user_id,
+                    )
+            except (ConnectionError, TimeoutError, OSError, RuntimeError) as memory_error:
+                config.logger.warning(
+                    'Memory retrieval failed for user_id=%s: %s. '
+                    'Proceeding without history context.',
+                    user.user_id,
+                    str(memory_error),
+                )
+        else:
+            config.logger.debug(
+                'VectorService not available; proceeding without memory for user_id=%s',
+                user.user_id,
+            )
+
+        # Load optional user profile for personalised critique
+        profile_context_str: str | None = None
+        try:
+            profile = profile_service.get_profile(user.user_id)
+        except RuntimeError as e:
+            config.logger.warning(
+                'Failed to load profile for user_id=%s: %s. Proceeding without profile.',
+                user.user_id,
+                str(e),
+            )
+        else:
+            if profile is not None:
+                profile_context_str = _format_profile_for_prompt(profile)
+                config.logger.debug(
+                    'Injecting profile context into prompt for user_id=%s',
+                    user.user_id,
+                )
+
+        # Analyze with Gemini AI agent
+        result = await agent_service.analyze_image(
+            image_bytes=image_bytes,
+            mime_type=mime_type,
+            user_input=user_input,
+            past_critiques=_merge_memory_context(
+                past_critiques=past_critiques_str,
+                portfolio_context=portfolio_context_str,
+            ),
+            profile_context=profile_context_str,
+            conversation_context=conversation_context_str,
+            has_artwork=image_bytes is not None,
+        )
+
+        # Persist critique - Postgres + async Qdrant sync
+        analysis_result = AnalysisResponse(**result) if isinstance(result, dict) else result
+        if image_bytes is None:
+            analysis_result.score = None
+
+        synced_via_pg = False
+        try:
+            sb = create_sync_supabase_service_client(config)
+            image_asset_id = None
+            if image_path is not None:
+                img_repo = ImageAssetRepository(sb, config.logger)
+                asset = img_repo.create(
+                    user_id=user.user_id,
+                    storage_bucket=config.supabase.storage_bucket,
+                    storage_object_path=image_path,
+                    mime_type=mime_type,
+                    original_filename=file.filename if file is not None else None,
+                    byte_size=len(image_bytes) if image_bytes else None,
+                )
+                image_asset_id = asset.id
+            cr_repo = CritiqueRepository(sb, config.logger)
+            artwork_filename = (file.filename if file is not None else None) or 'unknown'
+            row = cr_repo.create(
+                user_id=user.user_id,
+                summary=_build_persistence_summary(analysis_result),
+                score=analysis_result.score,
+                rubric_anchors=analysis_result.rubric_anchors,
+                prioritized_issues=[
+                    {
+                        'title': item.title,
+                        'diagnosis': item.diagnosis,
+                        'priority': item.priority,
+                    }
+                    for item in analysis_result.prioritized_issues
+                ],
+                root_causes=analysis_result.root_causes,
+                targeted_drills=[
+                    {
+                        'name': item.name,
+                        'objective': item.objective,
+                        'success_check': item.success_check,
+                    }
+                    for item in analysis_result.targeted_drills
+                ],
+                readiness_gate=analysis_result.readiness_gate,
+                confidence=analysis_result.confidence,
+                tags=[],
+                goals_snapshot=profile_context_str,
+                conversation_id=active_conversation_id,
+                image_asset_id=image_asset_id,
+                artwork_filename=artwork_filename,
+            )
+            if active_conversation_id:
+                msg_repo = ConversationMessageRepository(sb, config.logger)
+                user_message = (
+                    user_input.strip()
+                    if user_input and user_input.strip()
+                    else 'Please critique the uploaded artwork.'
+                )
+                msg_repo.create(
+                    conversation_id=active_conversation_id,
+                    user_id=user.user_id,
+                    role='user',
+                    content=user_message,
+                    critique_id=row.id,
+                )
+                msg_repo.create(
+                    conversation_id=active_conversation_id,
+                    user_id=user.user_id,
+                    role='assistant',
+                    content=_build_assistant_conversation_message(analysis_result),
+                    critique_id=row.id,
+                )
+            if analysis_result.score is not None:
+                try:
+                    dimension_scores = {
+                        'overall_score_1_to_10': analysis_result.score,
+                        'prioritized_issue_count': len(analysis_result.prioritized_issues),
+                        'root_cause_count': len(analysis_result.root_causes),
+                        'targeted_drill_count': len(analysis_result.targeted_drills),
+                        'confidence_percent': round(analysis_result.confidence * 100),
+                    }
+                    ProgressSnapshotRepository(sb, config.logger).create(
+                        user_id=user.user_id,
+                        critique_id=row.id,
+                        rubric_key='critique_quality',
+                        rubric_version='1.0',
+                        dimension_scores=dimension_scores,
+                        aggregate_score=float(analysis_result.score),
+                        narrative=(
+                            f'{_build_persistence_summary(analysis_result)} '
+                            f'Next: {_build_persistence_advice(analysis_result)}'
+                        ).strip(),
+                    )
+                    UserProgressRepository(sb, config.logger).upsert_after_critique(
+                        user_id=user.user_id,
+                        score=analysis_result.score,
+                    )
+                except RuntimeError as progress_error:
+                    config.logger.warning(
+                        'Progress persistence skipped for user_id=%s: %s',
+                        user.user_id,
+                        str(progress_error),
+                    )
+                VectorSyncJobRepository(sb, config.logger).enqueue(
+                    ENTITY_CRITIQUE,
+                    row.id,
+                    OP_UPSERT,
+                )
+            else:
+                config.logger.debug(
+                    'Skipping progress and vector sync for unscored text-only critique id=%s',
+                    row.id,
+                )
+            synced_via_pg = True
+            config.logger.info(
+                'Critique persisted to Postgres and queued for Qdrant: id=%s user_id=%s',
+                row.id,
+                user.user_id,
+            )
+        except RuntimeError as persist_error:
+            config.logger.warning(
+                'Postgres critique persistence / enqueue failed: %s',
+                str(persist_error),
+            )
+
+        if (
+            not synced_via_pg
+            and vector_service is not None
+            and analysis_result.score is not None
+        ):
+            try:
+                config.logger.debug('Fallback: store critique directly in Qdrant')
+                artwork_filename = (file.filename if file is not None else None) or 'unknown'
+                critique = ArtCritique.from_analysis_response(
+                    analysis_result,
+                    goals_snapshot=profile_context_str,
+                )
+                vector_service.save_critique(
+                    critique,
+                    artwork_filename,
+                    user_id=user.user_id,
+                    image_path=image_path,
+                )
+                config.logger.info(
+                    'Critique stored in vector database (fallback): %s (user_id=%s)',
+                    artwork_filename,
+                    user.user_id,
+                )
+            except (ConnectionError, TimeoutError, OSError, RuntimeError) as vector_error:
+                config.logger.warning(
+                    'Failed to store critique in vector database: %s. '
+                    'Continuing with analysis response.',
+                    str(vector_error),
+                )
+                if storage_service is not None and image_path is not None:
+                    storage_service.delete_file(image_path)
+        elif not synced_via_pg:
+            config.logger.debug(
+                'Skipping vector storage (no Postgres, no VectorService) user_id=%s',
+                user.user_id,
+            )
+
+        # Always return the analysis even if vector DB operations failed
+        return analysis_result  # noqa: TRY300
+    except AIServiceError as e:
+        config.logger.warning('AI service error: %s (code=%s)', e.message, e.error_code)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                'error': e.error_code,
+                'message': e.message,
+                'retry_after': e.retry_after,
+            },
+        ) from e
+    except HTTPException:
+        raise
+    except Exception as e:
+        config.logger.exception('Error processing image')
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f'Error analyzing image: {e!s}',
+        ) from e
+
+
 def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR0915
     """
     Create analysis router with configuration.
@@ -342,395 +720,37 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
             HTTPException 422: Neither image nor text was provided.
             HTTPException 500: Unexpected processing error.
         """
-        # Ensure that at least image or text is provided.
-        _require_at_least_one_input(file=file, user_input=user_input)
-
-        try:
-            # File validation
-            image_bytes: bytes | None = None
-            mime_type: str | None = None
-            image_path: str | None = None
-
-            if file is not None:
-                mime_type = validate_image_content_type(file.content_type)
-
-                image_bytes = await file.read()
-
-                validate_file_size(image_bytes, config.upload.max_file_size_mb)
-
-                _extension, mime_type = validate_image_file(
-                    filename=file.filename or 'unknown',
-                    content_type=mime_type,
-                    config=config,
-                )
-                if storage_service is not None and image_bytes is not None:
-                    try:
-                        image_path = storage_service.upload_image(
-                            user_id=user.user_id,
-                            image_bytes=image_bytes,
-                            filename=file.filename or 'unknown',
-                            mime_type=mime_type,
-                        )
-                    except RuntimeError as storage_error:
-                        config.logger.warning(
-                            'Image upload failed for user_id=%s: %s. '
-                            'Continuing without persisted image reference.',
-                            user.user_id,
-                            str(storage_error),
-                        )
-
-            # Log the request with context
-            config.logger.info(
-                'Analyzing input — file: %s | user_input: %s | user_id: %s',
-                file.filename if file else 'none',
-                'yes' if user_input else 'none',
-                user.user_id,
-            )
-
-            past_critiques_str: str | None = None
-            portfolio_context_str: str | None = None
-            conversation_context_str: str | None = None
-            active_conversation_id = (
-                conversation_id.strip() if conversation_id and conversation_id.strip() else None
-            )
-            if active_conversation_id:
-                try:
-                    sb_for_conversation = create_sync_supabase_service_client(config)
-                    conversation_repo = ConversationRepository(sb_for_conversation, config.logger)
-                    conversation_message_repo = ConversationMessageRepository(
-                        sb_for_conversation,
-                        config.logger,
-                    )
-                    conversation = conversation_repo.get_active_for_user(
-                        active_conversation_id,
-                        user.user_id,
-                    )
-                    if conversation is None:
-                        raise HTTPException(
-                            status_code=status.HTTP_404_NOT_FOUND,
-                            detail='Conversation not found.',
-                        )
-                    recent_messages = conversation_message_repo.list_recent_for_conversation(
-                        conversation_id=active_conversation_id,
-                        user_id=user.user_id,
-                        limit=8,
-                    )
-                    conversation_context_str = _format_conversation_messages_for_prompt(
-                        recent_messages
-                    )
-                except RuntimeError as conversation_error:
-                    config.logger.warning(
-                        'Conversation lookup failed for user_id=%s conversation_id=%s: %s. '
-                        'Proceeding without short-term conversation memory.',
-                        user.user_id,
-                        active_conversation_id,
-                        str(conversation_error),
-                    )
-
-            if vector_service is not None:
-                try:
-                    # Use the user's own comment as the semantic query when
-                    # available; fall back to a generic drawing-error query so
-                    # we always attempt to surface relevant history.
-                    memory_query = (
-                        user_input.strip()
-                        if user_input and user_input.strip()
-                        else 'technical drawing errors anatomy perspective'
-                    )
-                    past_records = vector_service.search_similar_critiques(
-                        query_text=memory_query,
-                        user_id=user.user_id,
-                    )
-                    if past_records:
-                        past_critiques_str = (
-                            ''.join(
-                                f'- Summary: {r["summary"]} | Advice: {r["advice"]}'
-                                for r in past_records
-                                if r.get('summary') or r.get('advice')
-                            )
-                            or None
-                        )  # collapse to None if every record had empty fields
-                        config.logger.debug(
-                            'Injecting %d past critique(s) into prompt for user_id=%s',
-                            len(past_records),
-                            user.user_id,
-                        )
-                    else:
-                        config.logger.debug(
-                            'No past critiques found for user_id=%s — proceeding without memory',
-                            user.user_id,
-                        )
-
-                    portfolio_neighbors = vector_service.search_similar_portfolio_items(
-                        query_text=memory_query,
-                        user_id=user.user_id,
-                    )
-                    if portfolio_neighbors:
-                        portfolio_context_str = _format_portfolio_neighbors_for_prompt(
-                            portfolio_neighbors
-                        )
-                        config.logger.debug(
-                            'Injecting %d portfolio neighbor(s) into prompt for user_id=%s',
-                            len(portfolio_neighbors),
-                            user.user_id,
-                        )
-                    else:
-                        config.logger.debug(
-                            'No portfolio neighbors found for user_id=%s',
-                            user.user_id,
-                        )
-                except (ConnectionError, TimeoutError, OSError, RuntimeError) as memory_error:
-                    config.logger.warning(
-                        'Memory retrieval failed for user_id=%s: %s. '
-                        'Proceeding without history context.',
-                        user.user_id,
-                        str(memory_error),
-                    )
-            else:
-                config.logger.debug(
-                    'VectorService not available; proceeding without memory for user_id=%s',
-                    user.user_id,
-                )
-
-            # Load optional user profile for personalised critique
-            profile_context_str: str | None = None
-            try:
-                profile = profile_service.get_profile(user.user_id)
-            except RuntimeError as e:
-                config.logger.warning(
-                    'Failed to load profile for user_id=%s: %s. Proceeding without profile.',
-                    user.user_id,
-                    str(e),
-                )
-            else:
-                if profile is not None:
-                    profile_context_str = _format_profile_for_prompt(profile)
-                    config.logger.debug(
-                        'Injecting profile context into prompt for user_id=%s',
-                        user.user_id,
-                    )
-
-            # Analyze with Gemini AI agent
-            result = await agent_service.analyze_image(
-                image_bytes=image_bytes,
-                mime_type=mime_type,
-                user_input=user_input,
-                past_critiques=_merge_memory_context(
-                    past_critiques=past_critiques_str,
-                    portfolio_context=portfolio_context_str,
-                ),
-                profile_context=profile_context_str,
-                conversation_context=conversation_context_str,
-                has_artwork=image_bytes is not None,
-            )
-
-            # Persist critique - Postgres + async Qdrant sync
-            analysis_result = AnalysisResponse(**result) if isinstance(result, dict) else result
-            if image_bytes is None:
-                analysis_result.score = None
-
-            synced_via_pg = False
-            try:
-                sb = create_sync_supabase_service_client(config)
-                image_asset_id = None
-                if image_path is not None:
-                    img_repo = ImageAssetRepository(sb, config.logger)
-                    asset = img_repo.create(
-                        user_id=user.user_id,
-                        storage_bucket=config.supabase.storage_bucket,
-                        storage_object_path=image_path,
-                        mime_type=mime_type,
-                        original_filename=file.filename if file is not None else None,
-                        byte_size=len(image_bytes) if image_bytes else None,
-                    )
-                    image_asset_id = asset.id
-                cr_repo = CritiqueRepository(sb, config.logger)
-                artwork_filename = (file.filename if file is not None else None) or 'unknown'
-                row = cr_repo.create(
-                    user_id=user.user_id,
-                    summary=_build_persistence_summary(analysis_result),
-                    score=analysis_result.score,
-                    rubric_anchors=analysis_result.rubric_anchors,
-                    prioritized_issues=[
-                        {
-                            'title': item.title,
-                            'diagnosis': item.diagnosis,
-                            'priority': item.priority,
-                        }
-                        for item in analysis_result.prioritized_issues
-                    ],
-                    root_causes=analysis_result.root_causes,
-                    targeted_drills=[
-                        {
-                            'name': item.name,
-                            'objective': item.objective,
-                            'success_check': item.success_check,
-                        }
-                        for item in analysis_result.targeted_drills
-                    ],
-                    readiness_gate=analysis_result.readiness_gate,
-                    confidence=analysis_result.confidence,
-                    tags=[],
-                    goals_snapshot=profile_context_str,
-                    conversation_id=active_conversation_id,
-                    image_asset_id=image_asset_id,
-                    artwork_filename=artwork_filename,
-                )
-                if active_conversation_id:
-                    msg_repo = ConversationMessageRepository(sb, config.logger)
-                    user_message = (
-                        user_input.strip()
-                        if user_input and user_input.strip()
-                        else 'Please critique the uploaded artwork.'
-                    )
-                    msg_repo.create(
-                        conversation_id=active_conversation_id,
-                        user_id=user.user_id,
-                        role='user',
-                        content=user_message,
-                        critique_id=row.id,
-                    )
-                    msg_repo.create(
-                        conversation_id=active_conversation_id,
-                        user_id=user.user_id,
-                        role='assistant',
-                        content=_build_assistant_conversation_message(analysis_result),
-                        critique_id=row.id,
-                    )
-                if analysis_result.score is not None:
-                    try:
-                        dimension_scores = {
-                            'overall_score_1_to_10': analysis_result.score,
-                            'prioritized_issue_count': len(analysis_result.prioritized_issues),
-                            'root_cause_count': len(analysis_result.root_causes),
-                            'targeted_drill_count': len(analysis_result.targeted_drills),
-                            'confidence_percent': round(analysis_result.confidence * 100),
-                        }
-                        ProgressSnapshotRepository(sb, config.logger).create(
-                            user_id=user.user_id,
-                            critique_id=row.id,
-                            rubric_key='critique_quality',
-                            rubric_version='1.0',
-                            dimension_scores=dimension_scores,
-                            aggregate_score=float(analysis_result.score),
-                            narrative=(
-                                f'{_build_persistence_summary(analysis_result)} '
-                                f'Next: {_build_persistence_advice(analysis_result)}'
-                            ).strip(),
-                        )
-                        UserProgressRepository(sb, config.logger).upsert_after_critique(
-                            user_id=user.user_id,
-                            score=analysis_result.score,
-                        )
-                    except RuntimeError as progress_error:
-                        config.logger.warning(
-                            'Progress persistence skipped for user_id=%s: %s',
-                            user.user_id,
-                            str(progress_error),
-                        )
-                    VectorSyncJobRepository(sb, config.logger).enqueue(
-                        ENTITY_CRITIQUE,
-                        row.id,
-                        OP_UPSERT,
-                    )
-                else:
-                    config.logger.debug(
-                        'Skipping progress and vector sync for unscored text-only critique id=%s',
-                        row.id,
-                    )
-                synced_via_pg = True
-                config.logger.info(
-                    'Critique persisted to Postgres and queued for Qdrant: id=%s user_id=%s',
-                    row.id,
-                    user.user_id,
-                )
-            except RuntimeError as persist_error:
-                config.logger.warning(
-                    'Postgres critique persistence / enqueue failed: %s',
-                    str(persist_error),
-                )
-
-            if (
-                not synced_via_pg
-                and vector_service is not None
-                and analysis_result.score is not None
-            ):
-                try:
-                    config.logger.debug('Fallback: store critique directly in Qdrant')
-                    artwork_filename = (file.filename if file is not None else None) or 'unknown'
-                    critique = ArtCritique.from_analysis_response(
-                        analysis_result,
-                        goals_snapshot=profile_context_str,
-                    )
-                    vector_service.save_critique(
-                        critique,
-                        artwork_filename,
-                        user_id=user.user_id,
-                        image_path=image_path,
-                    )
-                    config.logger.info(
-                        'Critique stored in vector database (fallback): %s (user_id=%s)',
-                        artwork_filename,
-                        user.user_id,
-                    )
-                except (ConnectionError, TimeoutError, OSError, RuntimeError) as vector_error:
-                    config.logger.warning(
-                        'Failed to store critique in vector database: %s. '
-                        'Continuing with analysis response.',
-                        str(vector_error),
-                    )
-                    if storage_service is not None and image_path is not None:
-                        storage_service.delete_file(image_path)
-            elif not synced_via_pg:
-                config.logger.debug(
-                    'Skipping vector storage (no Postgres, no VectorService) user_id=%s',
-                    user.user_id,
-                )
-
-            # Always return the analysis even if vector DB operations failed
-            return analysis_result  # noqa: TRY300
-
-        except AIServiceError as e:
-            config.logger.warning('AI service error: %s (code=%s)', e.message, e.error_code)
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail={
-                    'error': e.error_code,
-                    'message': e.message,
-                    'retry_after': e.retry_after,
-                },
-            ) from e
-        except HTTPException:
-            raise
-        except Exception as e:
-            config.logger.exception('Error processing image')
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f'Error analyzing image: {e!s}',
-            ) from e
+        return await execute_critique_request(
+            config=config,
+            agent_service=agent_service,
+            profile_service=profile_service,
+            vector_service=vector_service,
+            storage_service=storage_service,
+            user=user,
+            file=file,
+            user_input=user_input,
+            conversation_id=conversation_id,
+        )
 
     @router.post(
         '/chat',
-        summary='General art-learning chat',
+        summary='Conversation turn (Q&A or text-only critique)',
         description=(
-            'Answer questions about learning methods, books, tools, and theory. '
-            'Does not use critique memory (RAG). For artwork feedback with structure, '
-            'use /analysis/critique (with an image when possible).'
+            'The model classifies each message as general art-learning Q&A or as a request '
+            'for structured feedback on the user\'s work. Critique turns run the same pipeline '
+            'as /analysis/critique (without an image). Upload images via /analysis/critique.'
         ),
     )
     async def conversation_chat(
         user: Annotated[AuthUser, Depends(current_user)],
         body: ConversationChatRequest,
     ) -> ConversationChatResponse:
-        """General Q&A turn: no structured critique schema, no critique vector retrieval."""
+        """Classify the turn, then answer as Q&A or run structured text-only critique."""
         message = body.message.strip()
-        if is_text_only_critique_intent(message):
+        if not message:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail=(
-                    'This message looks like a request for artwork feedback. '
-                    'Upload an image and use /analysis/critique, or ask a general question.'
-                ),
+                detail='Message cannot be empty.',
             )
 
         conversation_context_str: str | None = None
@@ -746,6 +766,60 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                 conversation_id=active_conversation_id,
                 user_id=user.user_id,
             )
+
+        try:
+            intent = await agent_service.classify_conversation_turn(
+                user_input=message,
+                conversation_context=conversation_context_str,
+            )
+        except Exception as e:
+            config.logger.exception('Error classifying conversation turn')
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f'Error classifying conversation turn: {e!s}',
+            ) from e
+
+        if intent.mode == 'critique':
+            try:
+                analysis = await execute_critique_request(
+                    config=config,
+                    agent_service=agent_service,
+                    profile_service=profile_service,
+                    vector_service=vector_service,
+                    storage_service=storage_service,
+                    user=user,
+                    file=None,
+                    user_input=message,
+                    conversation_id=active_conversation_id,
+                )
+            except AIServiceError as e:
+                config.logger.warning('AI service error: %s (code=%s)', e.message, e.error_code)
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail={
+                        'error': e.error_code,
+                        'message': e.message,
+                        'retry_after': e.retry_after,
+                    },
+                ) from e
+            except HTTPException:
+                raise
+            except Exception as e:
+                config.logger.exception('Error in routed critique from chat')
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f'Error in routed critique: {e!s}',
+                ) from e
+
+            analysis_model = (
+                analysis
+                if isinstance(analysis, AnalysisResponse)
+                else AnalysisResponse.model_validate(
+                    analysis if isinstance(analysis, dict) else vars(analysis),
+                )
+            )
+            summary = _build_assistant_conversation_message(analysis_model)
+            return ConversationChatResponse(reply=summary, analysis=analysis_model)
 
         profile_context_str: str | None = None
         try:

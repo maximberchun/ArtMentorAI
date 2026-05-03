@@ -22,9 +22,9 @@ _CRITIQUE_HINT_PATTERNS: tuple[re.Pattern[str], ...] = (
 
 
 def is_text_only_critique_intent(message: str) -> bool:
-    """Return True when a text-only turn should use structured critique, not general chat.
+    """Keyword fallback when LLM intent classification is unavailable.
 
-    Mirrors ``frontend/src/lib/conversationIntent.ts`` — keep rules in sync.
+    Mirrors ``frontend/src/lib/conversationIntent.ts`` for the same heuristics.
     """
     normalized = ' '.join(message.strip().split())
     if not normalized:

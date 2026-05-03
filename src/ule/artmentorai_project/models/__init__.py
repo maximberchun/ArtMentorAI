@@ -15,6 +15,7 @@ infrastructure concerns (`core`).
 from .responses import (
     AnalysisResponse,
     ConversationChatResponse,
+    ConversationTurnIntent,
     PortfolioHistoryItem,
     PortfolioUploadResponse,
     ProgressMeResponse,
@@ -26,6 +27,7 @@ from .user_profile import UserProfile, UserProfileBase
 __all__ = [
     'AnalysisResponse',
     'ConversationChatResponse',
+    'ConversationTurnIntent',
     'AuthUser',
     'PortfolioHistoryItem',
     'PortfolioUploadResponse',
