@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from ..models import UserProfile
 
 from ..models.db_rows import ProfileRow
-from ._rows import as_model_list
+from ._rows import as_model_list, postgrest_returned_rows
 
 
 class ProfileRepository:
@@ -85,7 +85,4 @@ class ProfileRepository:
             msg = f'Failed to delete profile: {exc!s}'
             raise RuntimeError(msg) from exc
 
-        data = response.data
-        if isinstance(data, list):
-            return len(data) > 0
-        return data is not None
+        return postgrest_returned_rows(response.data)

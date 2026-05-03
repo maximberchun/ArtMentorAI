@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from supabase import Client
 
 from ..models.db_rows import ProgressSnapshotRow
-from ._rows import as_model, as_model_list, single_row_dict
+from ._rows import as_model, as_model_list, postgrest_returned_rows, single_row_dict
 
 
 class ProgressSnapshotRepository:
@@ -109,7 +109,4 @@ class ProgressSnapshotRepository:
             msg = f'Failed to delete progress snapshot: {exc!s}'
             raise RuntimeError(msg) from exc
 
-        data = response.data
-        if isinstance(data, list):
-            return len(data) > 0
-        return data is not None
+        return postgrest_returned_rows(response.data)

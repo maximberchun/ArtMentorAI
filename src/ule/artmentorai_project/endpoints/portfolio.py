@@ -6,12 +6,10 @@ This module provides REST endpoints for:
 - Retrieving a single item by ID
 """
 
-from collections.abc import Awaitable, Callable
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from pydantic import ValidationError
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from ..config import AppConfig
 from ..db import create_sync_supabase_service_client
@@ -19,26 +17,13 @@ from ..models import AuthUser, PortfolioHistoryItem, PortfolioUploadResponse
 from ..repositories import ImageAssetRepository, PortfolioItemRepository, VectorSyncJobRepository
 from ..repositories.vector_sync_job_repository import ENTITY_PORTFOLIO_ITEM, OP_UPSERT
 from ..services import StorageService, VectorService
-from ..services.auth_service import AuthService
 from ..services.vector_service import PortfolioRecord
 from ..utils.upload_validation import (
     validate_file_size,
     validate_image_content_type,
     validate_image_file,
 )
-
-_bearer = HTTPBearer(auto_error=True)
-
-
-def _build_current_user_dependency(config: AppConfig) -> Callable[..., Awaitable[AuthUser]]:
-    auth = AuthService(config)
-
-    async def _current_user(
-        creds: Annotated[HTTPAuthorizationCredentials, Depends(_bearer)],
-    ) -> AuthUser:
-        return await auth.verify_access_token(creds.credentials)
-
-    return _current_user
+from .deps import build_current_user_dependency
 
 
 def get_vector_service(config: AppConfig) -> VectorService | None:
@@ -164,7 +149,7 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR0
     except RuntimeError:
         config.logger.exception('Failed to initialize storage service')
         storage_service = None
-    current_user = _build_current_user_dependency(config)
+    current_user = build_current_user_dependency(config)
 
     def _require_vector_service() -> VectorService:
         if vector_service is None:

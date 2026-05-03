@@ -1,28 +1,13 @@
 """Endpoints for managing user profiles (goals and preferences)."""
 
-from collections.abc import Awaitable, Callable
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from ..config import AppConfig
 from ..models import AuthUser, UserProfile, UserProfileBase
 from ..services import ProfileService
-from ..services.auth_service import AuthService
-
-_bearer = HTTPBearer(auto_error=True)
-
-
-def _build_current_user_dependency(config: AppConfig) -> Callable[..., Awaitable[AuthUser]]:
-    auth = AuthService(config)
-
-    async def _current_user(
-        creds: Annotated[HTTPAuthorizationCredentials, Depends(_bearer)],
-    ) -> AuthUser:
-        return await auth.verify_access_token(creds.credentials)
-
-    return _current_user
+from .deps import build_current_user_dependency
 
 
 def create_profile_router(config: AppConfig) -> APIRouter:
@@ -43,7 +28,7 @@ def create_profile_router(config: AppConfig) -> APIRouter:
     )
 
     profile_service = ProfileService(config=config, logger=config.logger)
-    current_user = _build_current_user_dependency(config)
+    current_user = build_current_user_dependency(config)
 
     @router.get(
         '/me',

@@ -16,35 +16,20 @@ Account linking is automatic in Supabase Auth:
 - Google OAuth and email/password both map to the same Supabase user
 """
 
-from collections.abc import Awaitable, Callable
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from ..config import AppConfig
 from ..models import AuthUser
-from ..services.auth_service import AuthService
 from ..services.oauth_service import OAuthService
-
-_bearer = HTTPBearer(auto_error=True)
-
-
-def _build_current_user_dependency(config: AppConfig) -> Callable[..., Awaitable[AuthUser]]:
-    auth = AuthService(config)
-
-    async def _current_user(
-        creds: Annotated[HTTPAuthorizationCredentials, Depends(_bearer)],
-    ) -> AuthUser:
-        return await auth.verify_access_token(creds.credentials)
-
-    return _current_user
+from .deps import build_current_user_dependency
 
 
 def create_auth_router(config: AppConfig) -> APIRouter:
     """Create auth router."""
     router = APIRouter(prefix='/auth', tags=['Auth'])
-    current_user = _build_current_user_dependency(config)
+    current_user = build_current_user_dependency(config)
     oauth = OAuthService(config)
 
     @router.get('/me', summary='Get current user identity')

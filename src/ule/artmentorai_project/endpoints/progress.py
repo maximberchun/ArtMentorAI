@@ -1,35 +1,18 @@
 """Endpoints for private user progress metrics."""
 
-from collections.abc import Awaitable, Callable
-from typing import Annotated
-
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from ..config import AppConfig
 from ..db import create_sync_supabase_service_client
 from ..models import AuthUser, ProgressMeResponse, ProgressSnapshotSummary
 from ..repositories import ProgressSnapshotRepository, UserProgressRepository
-from ..services.auth_service import AuthService
-
-_bearer = HTTPBearer(auto_error=True)
-
-
-def _build_current_user_dependency(config: AppConfig) -> Callable[..., Awaitable[AuthUser]]:
-    auth = AuthService(config)
-
-    async def _current_user(
-        creds: Annotated[HTTPAuthorizationCredentials, Depends(_bearer)],
-    ) -> AuthUser:
-        return await auth.verify_access_token(creds.credentials)
-
-    return _current_user
+from .deps import build_current_user_dependency
 
 
 def create_progress_router(config: AppConfig) -> APIRouter:
     """Create progress router with authenticated user-only endpoints."""
     router = APIRouter(prefix='/progress', tags=['Progress'])
-    current_user = _build_current_user_dependency(config)
+    current_user = build_current_user_dependency(config)
 
     @router.get(
         '/me',

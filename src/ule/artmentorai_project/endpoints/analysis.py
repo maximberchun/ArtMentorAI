@@ -7,11 +7,9 @@ This module provides REST endpoints for:
 - Error handling that doesn't break the API if vector DB is down
 """
 
-from collections.abc import Awaitable, Callable
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from ..config import AppConfig
 from ..db import create_sync_supabase_service_client
@@ -30,7 +28,6 @@ from ..repositories import (
 )
 from ..repositories.vector_sync_job_repository import ENTITY_CRITIQUE, OP_UPSERT
 from ..services import AgentService, ProfileService, StorageService
-from ..services.auth_service import AuthService
 from ..services.vector_service import ArtCritique, VectorService
 from ..utils.conversation_intent import is_text_only_critique_intent
 from ..utils.upload_validation import (
@@ -38,19 +35,7 @@ from ..utils.upload_validation import (
     validate_image_content_type,
     validate_image_file,
 )
-
-_bearer = HTTPBearer(auto_error=True)
-
-
-def _build_current_user_dependency(config: AppConfig) -> Callable[..., Awaitable[AuthUser]]:
-    auth = AuthService(config)
-
-    async def _current_user(
-        creds: Annotated[HTTPAuthorizationCredentials, Depends(_bearer)],
-    ) -> AuthUser:
-        return await auth.verify_access_token(creds.credentials)
-
-    return _current_user
+from .deps import build_current_user_dependency
 
 
 def get_agent_service(config: AppConfig) -> AgentService:
@@ -276,7 +261,7 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
     # Initialize services
     agent_service = AgentService(config)
     profile_service = ProfileService(config=config, logger=config.logger)
-    current_user = _build_current_user_dependency(config)
+    current_user = build_current_user_dependency(config)
     try:
         vector_service: VectorService | None = get_vector_service(config)
     except RuntimeError as init_error:

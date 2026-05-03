@@ -27,6 +27,13 @@ def as_model_list(model: type[T], rows: list[dict[str, Any]] | object | None) ->
     return [model.model_validate(r) for r in rows if isinstance(r, dict)]
 
 
+def postgrest_returned_rows(data: Any) -> bool:
+    """True when PostgREST ``execute().data`` indicates at least one row in the response."""
+    if isinstance(data, list):
+        return len(data) > 0
+    return data is not None
+
+
 def single_row_dict(data: Any) -> dict[str, Any]:
     """Return the single dict from a PostgREST insert/select response."""
     if data is None:
