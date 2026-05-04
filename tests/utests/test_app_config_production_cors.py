@@ -35,3 +35,22 @@ def test_development_allows_http_origins(monkeypatch: pytest.MonkeyPatch) -> Non
     cfg = AppConfig()
     cfg.set_logger(logging.getLogger('tests'))
     assert 'http://localhost:5173' in cfg.allowed_origins
+
+
+def test_default_cors_methods_are_explicit_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv('GEMINI__API_KEY', 'k')
+    monkeypatch.setenv('SUPABASE__URL', 'https://x.supabase.co')
+    cfg = AppConfig()
+    methods = set(cfg.cors_allow_methods)
+    assert {'GET', 'POST', 'OPTIONS'}.issubset(methods)
+    assert 'DELETE' not in methods
+    assert 'PATCH' not in methods
+
+
+def test_default_cors_headers_include_auth_and_content_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv('GEMINI__API_KEY', 'k')
+    monkeypatch.setenv('SUPABASE__URL', 'https://x.supabase.co')
+    cfg = AppConfig()
+    headers = {h.lower() for h in cfg.cors_allow_headers}
+    assert 'authorization' in headers
+    assert 'content-type' in headers

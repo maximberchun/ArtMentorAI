@@ -14,6 +14,7 @@ from ule.artmentorai_project.utils.upload_validation import (
     normalise_mime_type,
     sniff_image_mime,
     validate_image_bytes_integrity,
+    validate_image_content_type,
     validate_image_file,
 )
 
@@ -30,6 +31,12 @@ def upload_app_config(monkeypatch: pytest.MonkeyPatch) -> AppConfig:
 def _png_bytes() -> bytes:
     buf = BytesIO()
     Image.new('RGB', (2, 2), color=(10, 20, 30)).save(buf, format='PNG')
+    return buf.getvalue()
+
+
+def _jpeg_bytes() -> bytes:
+    buf = BytesIO()
+    Image.new('RGB', (2, 2), color=(40, 50, 60)).save(buf, format='JPEG')
     return buf.getvalue()
 
 
@@ -97,3 +104,34 @@ def test_validate_image_bytes_integrity_rejects_corrupt_payload(upload_app_confi
     with pytest.raises(HTTPException) as excinfo:
         validate_image_bytes_integrity(corrupt, 'x.png', mime)
     assert excinfo.value.status_code == 400
+
+
+def test_validate_image_content_type_rejects_non_image_payload() -> None:
+    with pytest.raises(HTTPException) as excinfo:
+        validate_image_content_type('application/octet-stream')
+    assert excinfo.value.status_code == 415
+
+
+def test_validate_image_content_type_rejects_missing_type() -> None:
+    with pytest.raises(HTTPException) as excinfo:
+        validate_image_content_type(None)
+    assert excinfo.value.status_code == 415
+
+
+def test_validate_image_file_rejects_spoofed_vector_mime(upload_app_config: AppConfig) -> None:
+    """Declared browser MIME must stay within the configured raster allowlist (blocks SVG/ZIP, etc.)."""
+    with pytest.raises(HTTPException) as excinfo:
+        validate_image_file('logo.png', 'image/svg+xml', upload_app_config)
+    assert excinfo.value.status_code == 400
+
+
+def test_validate_image_bytes_integrity_rejects_jpeg_disguised_as_png(
+    upload_app_config: AppConfig,
+) -> None:
+    """Magic-byte sniffing must win over filename and Content-Type (polyglot bypass)."""
+    jpeg = _jpeg_bytes()
+    _, mime = validate_image_file('innocent.png', 'image/png', upload_app_config)
+    with pytest.raises(HTTPException) as excinfo:
+        validate_image_bytes_integrity(jpeg, 'innocent.png', mime)
+    assert excinfo.value.status_code == 400
+    assert 'declared' in (excinfo.value.detail or '').lower()

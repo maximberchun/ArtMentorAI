@@ -75,12 +75,12 @@ def create_app(config: AppConfig) -> FastAPI:
 
     @app.exception_handler(RateLimitExceeded)
     async def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> Response:
-        return await _rate_limit_exceeded_handler(request, exc)
+        return _rate_limit_exceeded_handler(request, exc)
 
     @app.exception_handler(Exception)
     async def _safe_internal_errors(request: Request, exc: Exception) -> Response:
         if isinstance(exc, RateLimitExceeded):
-            return await _rate_limit_exceeded_handler(request, exc)
+            return _rate_limit_exceeded_handler(request, exc)
         if isinstance(exc, HTTPException):
             return await http_exception_handler(request, exc)
         if isinstance(exc, RequestValidationError):

@@ -75,6 +75,30 @@ def test_google_callback_exchanges_when_state_valid(
     assert data['user_id'] == 'user-99'
 
 
+def test_google_callback_rejects_malformed_payload_with_422(app_config: AppConfig) -> None:
+    """Callback body must include non-empty ``code`` and ``state`` (Pydantic contract)."""
+    app = FastAPI()
+    app.include_router(create_auth_router(app_config))
+    with TestClient(app) as client:
+        empty = client.post('/auth/google/callback', json={})
+        blank_code = client.post('/auth/google/callback', json={'code': '', 'state': 's'})
+        blank_state = client.post('/auth/google/callback', json={'code': 'c', 'state': ''})
+    assert empty.status_code == 422
+    assert blank_code.status_code == 422
+    assert blank_state.status_code == 422
+
+
+def test_google_oauth_url_issues_unique_state_per_request(app_config: AppConfig) -> None:
+    """Each authorize URL response must bind to its own CSRF ``state`` (no reuse)."""
+    app = FastAPI()
+    app.include_router(create_auth_router(app_config))
+    with TestClient(app) as client:
+        first = client.post('/auth/google/url').json()['state']
+        second = client.post('/auth/google/url').json()['state']
+    assert first != second
+    assert len(first) >= 16
+
+
 def test_google_callback_second_submit_fails(app_config: AppConfig, monkeypatch: pytest.MonkeyPatch) -> None:
     app = FastAPI()
     app.include_router(create_auth_router(app_config))
