@@ -8,8 +8,19 @@ This module provides REST endpoints for:
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from pydantic import ValidationError
+from slowapi import Limiter
 
 from ..config import AppConfig
 from ..db import create_sync_supabase_service_client
@@ -18,8 +29,10 @@ from ..repositories import ImageAssetRepository, PortfolioItemRepository, Vector
 from ..repositories.vector_sync_job_repository import ENTITY_PORTFOLIO_ITEM, OP_UPSERT
 from ..services import StorageService, VectorService
 from ..services.vector_service import PortfolioRecord
+from ..utils.api_errors import SAFE_INTERNAL_ERROR_DETAIL
 from ..utils.upload_validation import (
     validate_file_size,
+    validate_image_bytes_integrity,
     validate_image_content_type,
     validate_image_file,
 )
@@ -69,12 +82,13 @@ async def _validate_and_build_records(
             mime = validate_image_content_type(f.content_type)
             content = await f.read()
             validate_file_size(content, config.upload.max_file_size_mb)
-            validate_image_file(filename, mime, config)
+            _ext, normalised_mime = validate_image_file(filename, mime, config)
+            validate_image_bytes_integrity(content, filename, normalised_mime)
             image_path = storage_service.upload_image(
                 user_id=user_id,
                 image_bytes=content,
                 filename=filename,
-                mime_type=mime,
+                mime_type=normalised_mime,
             )
             uploaded_paths.append(image_path)
             records.append(
@@ -90,13 +104,14 @@ async def _validate_and_build_records(
         for path in uploaded_paths:
             storage_service.delete_file(path)
         raise
-    except RuntimeError as e:
+    except RuntimeError:
         for path in uploaded_paths:
             storage_service.delete_file(path)
+        config.logger.exception('Portfolio image upload failed')
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f'Failed to upload image(s): {e!s}',
-        ) from e
+            detail=SAFE_INTERNAL_ERROR_DETAIL,
+        ) from None
     return records
 
 
@@ -120,7 +135,7 @@ def _get_item_or_raise(
     return item
 
 
-def create_portfolio_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR0915
+def create_portfolio_router(config: AppConfig, limiter: Limiter) -> APIRouter:  # noqa: C901, PLR0915
     """
     Create router for portfolio upload and history.
 
@@ -176,7 +191,9 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR0
             'Optional tags are applied to all uploaded files.'
         ),
     )
+    @limiter.limit(config.rate_limits.portfolio_upload)
     async def upload_portfolio(  # noqa: C901
+        request: Request,
         files: Annotated[
             list[UploadFile],
             File(description='Image files to add to the portfolio.'),
@@ -187,6 +204,7 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR0
             Form(description='Optional comma-separated tags applied to all files.'),
         ] = None,
     ) -> PortfolioUploadResponse:  # pyright: ignore[reportUnusedFunction]
+        _ = request
         if not files:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -202,11 +220,12 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR0
         )
         try:
             sb = create_sync_supabase_service_client(config)
-        except RuntimeError as e:
+        except RuntimeError:
+            config.logger.exception('Supabase client unavailable for portfolio upload')
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f'Database is not configured or unavailable: {e!s}',
-            ) from e
+                detail='Database is temporarily unavailable.',
+            ) from None
 
         image_repo = ImageAssetRepository(sb, config.logger)
         portfolio_repo = PortfolioItemRepository(sb, config.logger)
@@ -241,7 +260,7 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR0
                 created_rows.append(row)
         except HTTPException:
             raise
-        except Exception as e:
+        except Exception:
             for row in reversed(created_rows):
                 portfolio_repo.soft_delete(row.id, row.user_id)
                 image_repo.soft_delete(row.image_asset_id, row.user_id)
@@ -251,8 +270,8 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR0
             config.logger.exception('Failed to persist portfolio for user_id=%s', user.user_id)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f'Failed to save portfolio: {e!s}',
-            ) from e
+                detail=SAFE_INTERNAL_ERROR_DETAIL,
+            ) from None
 
         return PortfolioUploadResponse(ids=[r.id for r in created_rows])
 
@@ -284,12 +303,12 @@ def create_portfolio_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR0
                 type_filter=type_filter,
                 signed_url_resolver=storage.create_signed_url,
             )
-        except RuntimeError as e:
+        except RuntimeError:
             config.logger.exception('Failed to get history for user_id=%s', user.user_id)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f'Failed to retrieve history: {e!s}',
-            ) from e
+                detail=SAFE_INTERNAL_ERROR_DETAIL,
+            ) from None
         validated: list[PortfolioHistoryItem] = []
         for i, row in enumerate(raw):
             try:

@@ -1,8 +1,10 @@
 """Shared validation helpers for image uploads across analysis and portfolio endpoints."""
 
+from io import BytesIO
 from pathlib import Path
 
 from fastapi import HTTPException, status
+from PIL import Image, UnidentifiedImageError
 
 from ..config import AppConfig
 
@@ -10,6 +12,17 @@ MIME_ALIASES: dict[str, str] = {
     'image/jpg': 'image/jpeg',
     'image/jpe': 'image/jpeg',
     'image/tif': 'image/tiff',
+}
+
+_MIN_BYTES_FOR_SNIFF = 12
+
+_EXTENSION_EXPECTED_MIMES: dict[str, frozenset[str]] = {
+    '.jpg': frozenset({'image/jpeg'}),
+    '.jpeg': frozenset({'image/jpeg'}),
+    '.png': frozenset({'image/png'}),
+    '.gif': frozenset({'image/gif'}),
+    '.webp': frozenset({'image/webp'}),
+    '.bmp': frozenset({'image/bmp'}),
 }
 
 
@@ -23,6 +36,30 @@ def normalise_mime_type(mime: str) -> str:
         The canonical MIME type string (lowercased, alias-resolved).
     """
     return MIME_ALIASES.get(mime.lower(), mime.lower())
+
+
+def sniff_image_mime(content: bytes) -> str | None:  # noqa: PLR0911
+    """Detect image format from magic bytes (not from client headers).
+
+    Args:
+        content: Raw file bytes.
+
+    Returns:
+        Canonical ``image/*`` MIME if recognised, else ``None``.
+    """
+    if len(content) < _MIN_BYTES_FOR_SNIFF:
+        return None
+    if content[:3] == b'\xff\xd8\xff':
+        return 'image/jpeg'
+    if content[:8] == b'\x89PNG\r\n\x1a\n':
+        return 'image/png'
+    if content[:6] in (b'GIF87a', b'GIF89a'):
+        return 'image/gif'
+    if content[:2] == b'BM':
+        return 'image/bmp'
+    if content[:4] == b'RIFF' and content[8:12] == b'WEBP':
+        return 'image/webp'
+    return None
 
 
 def validate_image_content_type(content_type: str | None) -> str:
@@ -69,7 +106,7 @@ def validate_image_file(
         HTTPException 400: If extension or MIME type is not allowed.
     """
     file_extension = Path(filename).suffix.lower()
-    actual_mime = content_type or 'image/jpeg'
+    actual_mime = normalise_mime_type(content_type or 'image/jpeg')
 
     if file_extension not in config.upload.allowed_extensions:
         allowed = ', '.join(config.upload.allowed_extensions)
@@ -86,6 +123,46 @@ def validate_image_file(
         )
 
     return file_extension, actual_mime
+
+
+def validate_image_bytes_integrity(content: bytes, filename: str, declared_mime: str) -> None:
+    """Confirm bytes match declared image type (magic bytes + decodable image).
+
+    Args:
+        content: Full file body (already size-checked).
+        filename: Original filename (extension cross-check).
+        declared_mime: Normalised MIME from headers and allowlist.
+
+    Raises:
+        HTTPException 400: If bytes are not a valid image or disagree with extension/MIME.
+    """
+    sniffed = sniff_image_mime(content)
+    declared = normalise_mime_type(declared_mime)
+    if sniffed is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Invalid image file or unsupported image format.',
+        )
+    if sniffed != declared:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Image content does not match its declared type.',
+        )
+    suffix = Path(filename).suffix.lower()
+    expected = _EXTENSION_EXPECTED_MIMES.get(suffix)
+    if expected is None or sniffed not in expected:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Image content does not match the file extension.',
+        )
+    try:
+        with Image.open(BytesIO(content)) as img:
+            img.verify()
+    except (OSError, SyntaxError, ValueError, TypeError, UnidentifiedImageError):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Image file is corrupted or could not be decoded.',
+        ) from None
 
 
 def validate_file_size(

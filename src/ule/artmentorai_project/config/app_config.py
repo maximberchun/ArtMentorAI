@@ -7,6 +7,7 @@ from pydantic import ConfigDict, Field, PrivateAttr
 from pydantic_settings import BaseSettings
 
 from .gemini_config import GeminiConfig
+from .rate_limit_config import RateLimitConfig
 from .server_config import ServerConfig
 from .ssl_config import SSLConfig
 from .supabase_config import SupabaseConfig
@@ -65,6 +66,10 @@ class AppConfig(BaseSettings):
     supabase: SupabaseConfig = Field(..., description='Supabase configuration (Auth/JWT)')
     upload: UploadConfig = Field(
         default_factory=UploadConfig, description='File upload configuration'
+    )
+    rate_limits: RateLimitConfig = Field(
+        default_factory=RateLimitConfig,
+        description='SlowAPI rate limit strings for expensive routes',
     )
     qdrant_host: str = Field(default='localhost', description='Qdrant host')
     qdrant_port: int = Field(default=6333, description='Qdrant HTTP port')

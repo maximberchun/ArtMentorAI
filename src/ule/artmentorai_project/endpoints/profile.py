@@ -7,6 +7,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, status
 from ..config import AppConfig
 from ..models import AuthUser, UserProfile, UserProfileBase
 from ..services import ProfileService
+from ..utils.api_errors import SAFE_INTERNAL_ERROR_DETAIL
 from .deps import build_current_user_dependency
 
 
@@ -38,12 +39,12 @@ def create_profile_router(config: AppConfig) -> APIRouter:
     async def get_profile(user: Annotated[AuthUser, Depends(current_user)]) -> UserProfile:
         try:
             profile = profile_service.get_profile(user.user_id)
-        except RuntimeError as e:
+        except RuntimeError:
             config.logger.exception('Failed to load profile for user_id=%s', user.user_id)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f'Error loading profile: {e!s}',
-            ) from e
+                detail=SAFE_INTERNAL_ERROR_DETAIL,
+            ) from None
 
         if profile is None:
             raise HTTPException(
@@ -75,12 +76,12 @@ def create_profile_router(config: AppConfig) -> APIRouter:
         profile = UserProfile(user_id=user.user_id, **payload.model_dump())
         try:
             saved = profile_service.upsert_profile(profile)
-        except RuntimeError as e:
+        except RuntimeError:
             config.logger.exception('Failed to save profile for user_id=%s', user.user_id)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f'Error saving profile: {e!s}',
-            ) from e
+                detail=SAFE_INTERNAL_ERROR_DETAIL,
+            ) from None
         return saved
 
     # Backward-compatible endpoints (do not trust caller-provided user_id).

@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import logging
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterator  # noqa: TC003
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from fastapi import APIRouter
+from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
 
 # Ensure local package imports work when project is not installed.
@@ -19,8 +19,23 @@ SRC_PATH = PROJECT_ROOT / 'src'
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
-from ule.artmentorai_project.cli import create_app
-from ule.artmentorai_project.config import AppConfig
+from slowapi import Limiter  # noqa: E402
+from slowapi.middleware import SlowAPIMiddleware  # noqa: E402
+from slowapi.util import get_remote_address  # noqa: E402
+
+from ule.artmentorai_project.cli import create_app  # noqa: E402
+from ule.artmentorai_project.config import AppConfig  # noqa: E402
+
+
+def create_test_limiter() -> Limiter:
+    """Build a SlowAPI limiter for isolated FastAPI apps in tests."""
+    return Limiter(key_func=get_remote_address)
+
+
+def install_slowapi(app: FastAPI, limiter: Limiter) -> None:
+    """Attach SlowAPI middleware and ``app.state.limiter`` (required by ``@limiter.limit``)."""
+    app.state.limiter = limiter
+    app.add_middleware(SlowAPIMiddleware)
 
 
 @pytest.fixture
@@ -68,7 +83,7 @@ def test_client(
     app_config: AppConfig,
 ) -> Iterator[TestClient]:
     """Create a FastAPI test client with external dependencies stubbed."""
-    import ule.artmentorai_project.cli as cli_module
+    import ule.artmentorai_project.cli as cli_module  # noqa: PLC0415
 
     def _stub_router(path_prefix: str, tag: str) -> APIRouter:
         router = APIRouter(prefix=path_prefix, tags=[tag])
@@ -92,7 +107,7 @@ def test_client(
     monkeypatch.setattr(
         cli_module,
         'create_analysis_router',
-        lambda _config: _stub_router('/analysis', 'Analysis'),
+        lambda _config, _limiter: _stub_router('/analysis', 'Analysis'),
     )
     monkeypatch.setattr(
         cli_module,
@@ -107,7 +122,7 @@ def test_client(
     monkeypatch.setattr(
         cli_module,
         'create_portfolio_router',
-        lambda _config: _stub_router('/portfolio', 'Portfolio'),
+        lambda _config, _limiter: _stub_router('/portfolio', 'Portfolio'),
     )
     monkeypatch.setattr(
         cli_module,

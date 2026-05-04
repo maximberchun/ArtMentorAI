@@ -8,6 +8,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+from tests.conftest import create_test_limiter, install_slowapi
 from ule.artmentorai_project.endpoints.auth import create_auth_router
 from ule.artmentorai_project.endpoints.portfolio import create_portfolio_router
 from ule.artmentorai_project.endpoints.profile import create_profile_router
@@ -195,7 +196,9 @@ def test_portfolio_history_me_returns_items(app_config, monkeypatch, token_auth_
     )
 
     app = FastAPI()
-    app.include_router(create_portfolio_router(app_config))
+    limiter = create_test_limiter()
+    install_slowapi(app, limiter)
+    app.include_router(create_portfolio_router(app_config, limiter))
     client = TestClient(app)
 
     response = client.get('/portfolio/history/me', headers={'Authorization': 'Bearer valid-token'})
@@ -250,7 +253,9 @@ def test_portfolio_history_me_skips_rows_that_fail_response_validation(
     )
 
     app = FastAPI()
-    app.include_router(create_portfolio_router(app_config))
+    limiter = create_test_limiter()
+    install_slowapi(app, limiter)
+    app.include_router(create_portfolio_router(app_config, limiter))
     client = TestClient(app)
 
     response = client.get('/portfolio/history/me', headers={'Authorization': 'Bearer valid-token'})
@@ -288,7 +293,9 @@ def test_portfolio_history_me_rejects_invalid_limit(app_config, monkeypatch, tok
     )
 
     app = FastAPI()
-    app.include_router(create_portfolio_router(app_config))
+    limiter = create_test_limiter()
+    install_slowapi(app, limiter)
+    app.include_router(create_portfolio_router(app_config, limiter))
     client = TestClient(app)
 
     response = client.get(

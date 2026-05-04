@@ -9,7 +9,8 @@ This module provides REST endpoints for:
 
 from typing import Annotated
 
-from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, UploadFile, status
+from slowapi import Limiter
 
 from ..config import AppConfig
 from ..db import create_sync_supabase_service_client
@@ -29,8 +30,10 @@ from ..repositories import (
 from ..repositories.vector_sync_job_repository import ENTITY_CRITIQUE, OP_UPSERT
 from ..services import AgentService, ProfileService, StorageService
 from ..services.vector_service import ArtCritique, VectorService
+from ..utils.api_errors import SAFE_INTERNAL_ERROR_DETAIL
 from ..utils.upload_validation import (
     validate_file_size,
+    validate_image_bytes_integrity,
     validate_image_content_type,
     validate_image_file,
 )
@@ -235,7 +238,7 @@ def _require_at_least_one_input(
         )
 
 
-async def execute_critique_request(
+async def execute_critique_request(  # noqa: C901, PLR0912, PLR0913, PLR0915
     *,
     config: AppConfig,
     agent_service: AgentService,
@@ -267,6 +270,11 @@ async def execute_critique_request(
                 filename=file.filename or 'unknown',
                 content_type=mime_type,
                 config=config,
+            )
+            validate_image_bytes_integrity(
+                image_bytes,
+                file.filename or 'unknown',
+                mime_type,
             )
             if storage_service is not None and image_bytes is not None:
                 try:
@@ -606,20 +614,21 @@ async def execute_critique_request(
         ) from e
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         config.logger.exception('Error processing image')
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f'Error analyzing image: {e!s}',
-        ) from e
+            detail=SAFE_INTERNAL_ERROR_DETAIL,
+        ) from None
 
 
-def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR0915
+def create_analysis_router(config: AppConfig, limiter: Limiter) -> APIRouter:  # noqa: C901, PLR0915
     """
     Create analysis router with configuration.
 
     Args:
         config: Application configuration
+        limiter: SlowAPI limiter (``app.state.limiter`` must match this instance).
 
     Returns:
         APIRouter: Configured router for analysis endpoints
@@ -664,7 +673,9 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
         description="""Send an image and optional comments for structured feedback with score
         and recommendations""",
     )
-    async def critique_artwork(  # noqa: C901, PLR0912, PLR0915
+    @limiter.limit(config.rate_limits.critique)
+    async def critique_artwork(
+        request: Request,
         user: Annotated[AuthUser, Depends(current_user)],
         file: Annotated[
             UploadFile | None, File(description='The artwork image to analyse.')
@@ -705,6 +716,7 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
         not be initialised at startup.
 
         Args:
+            request: HTTP request (required by the rate limiter integration).
             file:       Optional image file to analyse.
             user_input: Optional user comments or description of the artwork.
             conversation_id: Optional thread id for short-term message context.
@@ -720,6 +732,7 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
             HTTPException 422: Neither image nor text was provided.
             HTTPException 500: Unexpected processing error.
         """
+        _ = request
         return await execute_critique_request(
             config=config,
             agent_service=agent_service,
@@ -741,11 +754,20 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
             'as /analysis/critique (without an image). Upload images via /analysis/critique.'
         ),
     )
-    async def conversation_chat(
+    @limiter.limit(config.rate_limits.chat)
+    async def conversation_chat(  # noqa: C901, PLR0912, PLR0915
+        request: Request,
         user: Annotated[AuthUser, Depends(current_user)],
         body: ConversationChatRequest,
     ) -> ConversationChatResponse:
-        """Classify the turn, then answer as Q&A or run structured text-only critique."""
+        """Classify the turn, then answer as Q&A or run structured text-only critique.
+
+        Args:
+            request: HTTP request (required by the rate limiter integration).
+            user: Authenticated user identity.
+            body: User message and optional conversation id.
+        """
+        _ = request
         message = body.message.strip()
         if not message:
             raise HTTPException(
@@ -772,12 +794,12 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                 user_input=message,
                 conversation_context=conversation_context_str,
             )
-        except Exception as e:
+        except Exception:
             config.logger.exception('Error classifying conversation turn')
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f'Error classifying conversation turn: {e!s}',
-            ) from e
+                detail=SAFE_INTERNAL_ERROR_DETAIL,
+            ) from None
 
         if intent.mode == 'critique':
             try:
@@ -804,12 +826,12 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                 ) from e
             except HTTPException:
                 raise
-            except Exception as e:
+            except Exception:
                 config.logger.exception('Error in routed critique from chat')
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f'Error in routed critique: {e!s}',
-                ) from e
+                    detail=SAFE_INTERNAL_ERROR_DETAIL,
+                ) from None
 
             analysis_model = (
                 analysis
@@ -850,12 +872,12 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                     'retry_after': e.retry_after,
                 },
             ) from e
-        except Exception as e:
+        except Exception:
             config.logger.exception('Error in conversation chat')
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f'Error in conversation chat: {e!s}',
-            ) from e
+                detail=SAFE_INTERNAL_ERROR_DETAIL,
+            ) from None
 
         if conversation_ready and active_conversation_id:
             try:
@@ -908,11 +930,12 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                 user_id=user.user_id,
                 limit=20,
             )
-        except RuntimeError as exc:
+        except RuntimeError:
+            config.logger.exception('Failed to load conversation messages')
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f'Failed to load conversation messages: {exc!s}',
-            ) from exc
+                detail=SAFE_INTERNAL_ERROR_DETAIL,
+            ) from None
 
         return [
             {
@@ -940,11 +963,12 @@ def create_analysis_router(config: AppConfig) -> APIRouter:  # noqa: C901, PLR09
                 user_id=user.user_id,
                 title=title.strip() if title and title.strip() else None,
             )
-        except RuntimeError as exc:
+        except RuntimeError:
+            config.logger.exception('Failed to create conversation')
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f'Failed to create conversation: {exc!s}',
-            ) from exc
+                detail=SAFE_INTERNAL_ERROR_DETAIL,
+            ) from None
 
         return {
             'id': row.id,

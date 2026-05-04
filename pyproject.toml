@@ -8,6 +8,8 @@ maintainers = [
 ]
 dependencies = [
     "fastapi>=0.115.0",
+    "slowapi>=0.1.9",
+    "pillow>=10.0.0",
     "uvicorn[standard]",
     "python-multipart",
     "pydantic>=2.0.0,<3.0.0",
@@ -184,6 +186,7 @@ external = ["S"]                                             # Allow sonarlint e
 "**/{tests}/*" = [
     "D",
     "S101",
+    "S105",
     "PLR2004",
     "SLF001",
     "ANN",

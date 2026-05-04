@@ -14,6 +14,7 @@ framework-specific details.
 from .ssl_certificates import configure_ssl
 from .upload_validation import (
     validate_file_size,
+    validate_image_bytes_integrity,
     validate_image_content_type,
     validate_image_file,
 )
@@ -21,6 +22,7 @@ from .upload_validation import (
 __all__ = [
     'configure_ssl',
     'validate_file_size',
+    'validate_image_bytes_integrity',
     'validate_image_content_type',
     'validate_image_file',
 ]

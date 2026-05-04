@@ -3,13 +3,25 @@
 import argparse
 import logging
 import sys
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exception_handlers import (
+    http_exception_handler,
+    request_validation_exception_handler,
+)
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
 from starlette.middleware.cors import CORSMiddleware
+from starlette.responses import Response
 
 from .config import AppConfig
 from .endpoints import (
@@ -20,8 +32,10 @@ from .endpoints import (
     create_progress_router,
 )
 from .exceptions import UserExceptionError
+from .middleware import SecurityHeadersMiddleware
 from .services.vector_sync_worker import VectorSyncWorker
 from .utils import configure_ssl
+from .utils.api_errors import SAFE_INTERNAL_ERROR_DETAIL
 
 
 def create_app(config: AppConfig) -> FastAPI:
@@ -39,7 +53,7 @@ def create_app(config: AppConfig) -> FastAPI:
     vector_sync_worker = VectorSyncWorker(config)
 
     @asynccontextmanager
-    async def lifespan(_app: FastAPI):
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         await vector_sync_worker.start()
         try:
             yield
@@ -56,11 +70,32 @@ def create_app(config: AppConfig) -> FastAPI:
         lifespan=lifespan,
     )
 
+    limiter = Limiter(key_func=get_remote_address)
+    app.state.limiter = limiter
+
+    @app.exception_handler(RateLimitExceeded)
+    async def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> Response:
+        return await _rate_limit_exceeded_handler(request, exc)
+
+    @app.exception_handler(Exception)
+    async def _safe_internal_errors(request: Request, exc: Exception) -> Response:
+        if isinstance(exc, RateLimitExceeded):
+            return await _rate_limit_exceeded_handler(request, exc)
+        if isinstance(exc, HTTPException):
+            return await http_exception_handler(request, exc)
+        if isinstance(exc, RequestValidationError):
+            return await request_validation_exception_handler(request, exc)
+        config.logger.exception('Unhandled error path=%s', request.url.path)
+        return JSONResponse(
+            status_code=500,
+            content={'detail': SAFE_INTERNAL_ERROR_DETAIL},
+        )
+
     # ============== Include Routers ==============
     config.logger.info('Registering endpoints')
 
     # Analysis endpoint (critique and health checks)
-    analysis_router = create_analysis_router(config)
+    analysis_router = create_analysis_router(config, limiter)
     app.include_router(analysis_router)
 
     # Auth endpoint (Supabase JWT identity helpers)
@@ -72,7 +107,7 @@ def create_app(config: AppConfig) -> FastAPI:
     app.include_router(profile_router)
 
     # Portfolio endpoint (upload and history)
-    portfolio_router = create_portfolio_router(config)
+    portfolio_router = create_portfolio_router(config, limiter)
     app.include_router(portfolio_router)
 
     # Progress endpoint (private XP/level/streak and snapshots)
@@ -104,6 +139,10 @@ def create_app(config: AppConfig) -> FastAPI:
         'CORS middleware configured for origins: %s',
         ', '.join(config.allowed_origins),
     )
+
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(SlowAPIMiddleware)
+    config.logger.debug('Security headers and rate limit middleware enabled')
 
     # ============== Root Endpoints ==============
     @app.get('/', tags=['General'])

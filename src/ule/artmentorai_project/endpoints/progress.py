@@ -1,11 +1,14 @@
 """Endpoints for private user progress metrics."""
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from ..config import AppConfig
 from ..db import create_sync_supabase_service_client
 from ..models import AuthUser, ProgressMeResponse, ProgressSnapshotSummary
 from ..repositories import ProgressSnapshotRepository, UserProgressRepository
+from ..utils.api_errors import SAFE_INTERNAL_ERROR_DETAIL
 from .deps import build_current_user_dependency
 
 
@@ -16,12 +19,11 @@ def create_progress_router(config: AppConfig) -> APIRouter:
 
     @router.get(
         '/me',
-        response_model=ProgressMeResponse,
         summary='Get private progress metrics',
         description='Return XP, level, streak, and recent rubric snapshots for auth user.',
     )
     async def get_progress_me(
-        user: AuthUser = Depends(current_user),
+        user: Annotated[AuthUser, Depends(current_user)],
     ) -> ProgressMeResponse:
         progress = None
         snapshots = []
@@ -44,9 +46,10 @@ def create_progress_router(config: AppConfig) -> APIRouter:
                 ).default(user.user_id)
                 snapshots = []
             else:
+                config.logger.exception('Progress load failed for user_id=%s', user.user_id)
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=str(exc),
+                    detail=SAFE_INTERNAL_ERROR_DETAIL,
                 ) from exc
 
         recent_snapshots = [

@@ -7,8 +7,13 @@ from dataclasses import dataclass
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+from tests.conftest import create_test_limiter, install_slowapi
 from ule.artmentorai_project.endpoints.analysis import create_analysis_router
-from ule.artmentorai_project.models import AuthUser, ConversationChatResponse, ConversationTurnIntent
+from ule.artmentorai_project.models import (
+    AuthUser,
+    ConversationChatResponse,
+    ConversationTurnIntent,
+)
 
 
 @dataclass
@@ -77,7 +82,8 @@ class _FakeProfileService:
 
 class _FailingVectorService:
     def search_similar_critiques(self, **_kwargs):
-        raise RuntimeError('vector backend temporarily unavailable')
+        msg = 'vector backend temporarily unavailable'
+        raise RuntimeError(msg)
 
     def search_similar_portfolio_items(self, **_kwargs):
         return []
@@ -113,7 +119,9 @@ def _build_analysis_client(app_config, monkeypatch) -> TestClient:
     )
 
     app = FastAPI()
-    app.include_router(create_analysis_router(app_config))
+    limiter = create_test_limiter()
+    install_slowapi(app, limiter)
+    app.include_router(create_analysis_router(app_config, limiter))
     return TestClient(app)
 
 
