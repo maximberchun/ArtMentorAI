@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -180,7 +181,7 @@ _WEB_SEARCH_SYSTEM_INSTRUCTIONS = """
 
 class AgentService:
     """Service for AI-powered artwork analysis using Pydantic AI and Gemini."""
-    _MODEL_RUN_TIMEOUT_SECONDS = 60.0
+    _GEMINI_FALLBACK_HTTP_STATUSES = frozenset({503, 429})
 
     def __init__(self, config: AppConfig) -> None:
         """
@@ -192,6 +193,7 @@ class AgentService:
         self.config = config
         self.logger = config.logger
         self._search_calls_used = 0
+        self._model_run_timeout_seconds = float(config.gemini.timeout_seconds)
 
         # Initialize Gemini model
         os.environ['GEMINI_API_KEY'] = config.gemini.api_key
@@ -245,35 +247,93 @@ class AgentService:
                         "confidence": 0.82
                     }"""
 
-        # Create agent
-        self.agent = Agent(
-            model=config.gemini.model_name,  # Reads from .env
-            output_type=AnalysisResponse,
-            system_prompt=system_prompt,
-            retries=3,
-        )
-        self._register_web_search_tool(self.agent)
+        self._analysis_system_prompt = system_prompt
 
         chat_system = _CHAT_SYSTEM_PROMPT
         if config.web_search_enabled:
             chat_system += _WEB_SEARCH_SYSTEM_INSTRUCTIONS
+        self._chat_system_prompt = chat_system
 
-        self.chat_agent = Agent(
-            model=config.gemini.model_name,
-            output_type=ConversationChatResponse,
-            system_prompt=chat_system,
+        self.agent = self._build_analysis_agent(config.gemini.model_name)
+        self.chat_agent = self._build_chat_agent(config.gemini.model_name)
+        self.intent_agent = self._build_intent_agent(config.gemini.model_name)
+
+        self.logger.info('AgentService initialized successfully')
+
+    def _build_analysis_agent(self, model_name: str) -> Agent:
+        agent = Agent(
+            model=model_name,
+            output_type=AnalysisResponse,
+            system_prompt=self._analysis_system_prompt,
             retries=3,
         )
-        self._register_web_search_tool(self.chat_agent)
+        self._register_web_search_tool(agent)
+        return agent
 
-        self.intent_agent = Agent(
-            model=config.gemini.model_name,
+    def _build_chat_agent(self, model_name: str) -> Agent:
+        agent = Agent(
+            model=model_name,
+            output_type=ConversationChatResponse,
+            system_prompt=self._chat_system_prompt,
+            retries=3,
+        )
+        self._register_web_search_tool(agent)
+        return agent
+
+    def _build_intent_agent(self, model_name: str) -> Agent:
+        return Agent(
+            model=model_name,
             output_type=ConversationTurnIntent,
             system_prompt=_INTENT_CLASSIFIER_PROMPT,
             retries=2,
         )
 
-        self.logger.info('AgentService initialized successfully')
+    async def _run_agent_with_model_fallback(
+        self,
+        *,
+        message: list | str,
+        primary_agent: Agent,
+        build_for_model: Callable[[str], Agent],
+        op_name: str,
+    ) -> Any:
+        """Run primary model, then fallbacks on HTTP 503/429 or client-side run timeout."""
+        models = self.config.gemini.model_try_chain()
+        for idx, model in enumerate(models):
+            agent = primary_agent if idx == 0 else build_for_model(model)
+            try:
+                if idx > 0:
+                    self.logger.warning(
+                        'Retrying %s with fallback Gemini model %s (%d/%d)',
+                        op_name,
+                        model,
+                        idx + 1,
+                        len(models),
+                    )
+                return await asyncio.wait_for(
+                    agent.run(message),
+                    timeout=self._model_run_timeout_seconds,
+                )
+            except TimeoutError:
+                if idx >= len(models) - 1:
+                    raise
+                self.logger.warning(
+                    'Gemini model %s timed out after %ss for %s; trying next model in chain',
+                    model,
+                    self._model_run_timeout_seconds,
+                    op_name,
+                )
+            except ModelHTTPError as e:
+                if e.status_code not in self._GEMINI_FALLBACK_HTTP_STATUSES:
+                    raise
+                if idx >= len(models) - 1:
+                    raise
+                self.logger.warning(
+                    'Gemini model %s returned HTTP %s for %s; trying next model in chain',
+                    model,
+                    e.status_code,
+                    op_name,
+                )
+        raise RuntimeError('unreachable model fallback loop')  # pragma: no cover
 
     def _register_web_search_tool(self, target_agent: Agent) -> None:
         """Register a bounded web-search tool when enabled and configured."""
@@ -615,12 +675,14 @@ class AgentService:
             # Call agent (Pydantic AI handles image multimodal with Gemini)
             self.logger.info(
                 'Submitting request to Gemini (timeout=%ss, web_search_enabled=%s)',
-                self._MODEL_RUN_TIMEOUT_SECONDS,
+                self._model_run_timeout_seconds,
                 self.config.web_search_enabled,
             )
-            result = await asyncio.wait_for(
-                self.agent.run(message),
-                timeout=self._MODEL_RUN_TIMEOUT_SECONDS,
+            result = await self._run_agent_with_model_fallback(
+                message=message,
+                primary_agent=self.agent,
+                build_for_model=self._build_analysis_agent,
+                op_name='artwork analysis',
             )
             analysis_data = result.output
 
@@ -650,11 +712,6 @@ class AgentService:
                     message='AI service is temporarily unavailable. Please try again later.',
                     error_code='SERVICE_UNAVAILABLE',
                 ) from e
-            elif e.status_code == 503:
-                raise AIServiceError(
-                    message='AI service is temporarily unavailable. Please try again later.',
-                    error_code='SERVICE_UNAVAILABLE',
-                ) from e
             else:
                 raise AIServiceError(
                     message=f'AI service error: {e.message}',
@@ -669,7 +726,7 @@ class AgentService:
         except TimeoutError as e:
             self.logger.error(
                 'Gemini request timed out after %ss',
-                self._MODEL_RUN_TIMEOUT_SECONDS,
+                self._model_run_timeout_seconds,
             )
             raise AIServiceError(
                 message='AI request timed out. Please try again.',
@@ -698,9 +755,11 @@ class AgentService:
                 'Starting conversation chat with Gemini %s',
                 self.config.gemini.model_name,
             )
-            result = await asyncio.wait_for(
-                self.chat_agent.run(prompt),
-                timeout=self._MODEL_RUN_TIMEOUT_SECONDS,
+            result = await self._run_agent_with_model_fallback(
+                message=prompt,
+                primary_agent=self.chat_agent,
+                build_for_model=self._build_chat_agent,
+                op_name='conversation chat',
             )
             chat_data = result.output
             if not isinstance(chat_data, ConversationChatResponse):
@@ -740,7 +799,7 @@ class AgentService:
         except TimeoutError as e:
             self.logger.error(
                 'Gemini request timed out after %ss',
-                self._MODEL_RUN_TIMEOUT_SECONDS,
+                self._model_run_timeout_seconds,
             )
             raise AIServiceError(
                 message='AI request timed out. Please try again.',
@@ -765,9 +824,11 @@ class AgentService:
                 'Classifying conversation turn with Gemini %s',
                 self.config.gemini.model_name,
             )
-            result = await asyncio.wait_for(
-                self.intent_agent.run(prompt),
-                timeout=self._MODEL_RUN_TIMEOUT_SECONDS,
+            result = await self._run_agent_with_model_fallback(
+                message=prompt,
+                primary_agent=self.intent_agent,
+                build_for_model=self._build_intent_agent,
+                op_name='intent classification',
             )
             data = result.output
             if not isinstance(data, ConversationTurnIntent):

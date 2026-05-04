@@ -7,6 +7,7 @@ import logging
 from types import SimpleNamespace
 
 import pytest
+from pydantic_ai.exceptions import ModelHTTPError
 
 from ule.artmentorai_project.exceptions import AIServiceError
 from ule.artmentorai_project.models.responses.analysis_response import AnalysisResponse
@@ -29,15 +30,23 @@ class _CapturingAgent:
         return _FakeRunResult(self.output)
 
 
+class _GeminiConfigStub:
+    model_name = 'gemini-test'
+
+    def model_try_chain(self) -> tuple[str, ...]:
+        return ('gemini-test',)
+
+
 def _build_service(agent) -> AgentService:
     service = AgentService.__new__(AgentService)
     service.config = SimpleNamespace(
-        gemini=SimpleNamespace(model_name='gemini-test'),
+        gemini=_GeminiConfigStub(),
         web_search_enabled=False,
     )
     service.logger = logging.getLogger('tests.agent_service')
     service.agent = agent
     service._search_calls_used = 99
+    service._model_run_timeout_seconds = 60.0
     return service
 
 
@@ -203,3 +212,141 @@ def test_analyze_image_normalizes_issue_and_drill_order_by_dependency() -> None:
         'Perspective box sheet',
         'Anatomy landmark polish pass',
     ]
+
+
+class _GeminiWithFallbackStub:
+    model_name = 'gemini-primary'
+
+    def model_try_chain(self) -> tuple[str, ...]:
+        return ('gemini-primary', 'gemini-fallback')
+
+
+class _AgentRaises503:
+    async def run(self, _message):
+        raise ModelHTTPError(503, 'gemini-primary', {})
+
+
+def test_analyze_image_retries_with_fallback_model_on_503() -> None:
+    """After HTTP 503 from the primary model, the next model in the chain should be used."""
+    output_payload = {
+        'score': 7,
+        'rubric_anchors': ['Clean gesture rhythm'],
+        'prioritized_issues': [
+            {
+                'title': 'Torso perspective drift',
+                'diagnosis': 'Ribcage box rotates without a stable horizon reference.',
+                'priority': 1,
+            }
+        ],
+        'root_causes': ['Skipped construction lines'],
+        'targeted_drills': [
+            {
+                'name': 'Box rotation sheet',
+                'objective': 'Stabilize horizon handling in figure drawing.',
+                'success_check': 'Eight of ten boxes read with coherent vanishing logic.',
+            }
+        ],
+        'readiness_gate': 'Advance only after stable construction perspective.',
+        'confidence': 0.8,
+    }
+
+    fallback_agent = _CapturingAgent(output_payload)
+    service = AgentService.__new__(AgentService)
+    service.config = SimpleNamespace(
+        gemini=_GeminiWithFallbackStub(),
+        web_search_enabled=False,
+    )
+    service.logger = logging.getLogger('tests.agent_service')
+    service.agent = _AgentRaises503()
+    service._search_calls_used = 99
+
+    def _build_fallback(model: str) -> _CapturingAgent:
+        assert model == 'gemini-fallback'
+        return fallback_agent
+
+    service._build_analysis_agent = _build_fallback  # type: ignore[method-assign]
+    service._model_run_timeout_seconds = 60.0
+
+    result = asyncio.run(
+        service.analyze_image(
+            image_bytes=b'fake-image',
+            mime_type='image/png',
+            user_input='test',
+            has_artwork=True,
+        )
+    )
+
+    assert isinstance(result, AnalysisResponse)
+    assert result.score == 7
+    assert service._search_calls_used == 0
+    assert isinstance(fallback_agent.last_message, list)
+
+
+def test_analyze_image_retries_with_fallback_model_on_client_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After asyncio wait_for TimeoutError on the primary, the next model should be used."""
+    output_payload = {
+        'score': 7,
+        'rubric_anchors': ['Clean gesture rhythm'],
+        'prioritized_issues': [
+            {
+                'title': 'Torso perspective drift',
+                'diagnosis': 'Ribcage box rotates without a stable horizon reference.',
+                'priority': 1,
+            }
+        ],
+        'root_causes': ['Skipped construction lines'],
+        'targeted_drills': [
+            {
+                'name': 'Box rotation sheet',
+                'objective': 'Stabilize horizon handling in figure drawing.',
+                'success_check': 'Eight of ten boxes read with coherent vanishing logic.',
+            }
+        ],
+        'readiness_gate': 'Advance only after stable construction perspective.',
+        'confidence': 0.8,
+    }
+
+    calls = {'n': 0}
+
+    async def fake_wait_for(awaitable, timeout):
+        calls['n'] += 1
+        if calls['n'] == 1:
+            if asyncio.iscoroutine(awaitable):
+                awaitable.close()
+            raise TimeoutError()
+        return await awaitable
+
+    monkeypatch.setattr(agent_module.asyncio, 'wait_for', fake_wait_for)
+
+    fallback_agent = _CapturingAgent(output_payload)
+    service = AgentService.__new__(AgentService)
+    service.config = SimpleNamespace(
+        gemini=_GeminiWithFallbackStub(),
+        web_search_enabled=False,
+    )
+    service.logger = logging.getLogger('tests.agent_service')
+    service.agent = _CapturingAgent(output_payload)  # primary: first wait_for fails before run
+    service._search_calls_used = 99
+
+    def _build_fallback(model: str) -> _CapturingAgent:
+        assert model == 'gemini-fallback'
+        return fallback_agent
+
+    service._build_analysis_agent = _build_fallback  # type: ignore[method-assign]
+    service._model_run_timeout_seconds = 60.0
+
+    result = asyncio.run(
+        service.analyze_image(
+            image_bytes=b'fake-image',
+            mime_type='image/png',
+            user_input='test',
+            has_artwork=True,
+        )
+    )
+
+    assert isinstance(result, AnalysisResponse)
+    assert result.score == 7
+    assert calls['n'] == 2
+    assert isinstance(fallback_agent.last_message, list)
