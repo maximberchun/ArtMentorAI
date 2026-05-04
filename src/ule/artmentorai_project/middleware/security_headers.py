@@ -24,4 +24,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             'Permissions-Policy',
             'camera=(), microphone=(), geolocation=()',
         )
+        response.headers.setdefault(
+            'Content-Security-Policy',
+            "default-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+        )
         return response

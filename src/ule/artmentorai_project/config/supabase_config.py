@@ -33,6 +33,14 @@ class SupabaseConfig(BaseSettings):
         description='Google OAuth client secret for Supabase used in OAuth callback',
     )
 
+    oauth_redirect_url: str = Field(
+        default='http://127.0.0.1:5173/sign-in',
+        description=(
+            'OAuth redirect_to after Google sign-in; must be listed in Supabase Auth URL '
+            'configuration'
+        ),
+    )
+
     storage_bucket: str = Field(
         default='artworks',
         description='Supabase Storage bucket used for uploaded artwork files',

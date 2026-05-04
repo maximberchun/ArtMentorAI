@@ -1,9 +1,9 @@
 """Application configuration container for ArtMentor AI."""
 
 import logging
-from typing import Literal, Protocol, runtime_checkable
+from typing import Literal, Protocol, Self, runtime_checkable
 
-from pydantic import ConfigDict, Field, PrivateAttr
+from pydantic import ConfigDict, Field, PrivateAttr, model_validator
 from pydantic_settings import BaseSettings
 
 from .gemini_config import GeminiConfig
@@ -57,6 +57,22 @@ class AppConfig(BaseSettings):
             'http://127.0.0.1:8000',
         ],
         description='CORS allowed origins',
+    )
+
+    cors_allow_methods: list[str] = Field(
+        default=['GET', 'POST', 'PUT', 'OPTIONS', 'HEAD'],
+        description='CORS allowed HTTP methods',
+    )
+
+    cors_allow_headers: list[str] = Field(
+        default=[
+            'Accept',
+            'Authorization',
+            'Content-Type',
+            'Origin',
+            'X-Requested-With',
+        ],
+        description='CORS allowed request headers',
     )
 
     # ============== Sub-configurations ==============
@@ -136,6 +152,20 @@ class AppConfig(BaseSettings):
 
     # ============== Private Logger ==============
     _logger: logging.Logger | None = PrivateAttr(default=None)
+
+    @model_validator(mode='after')
+    def _validate_production_cors(self) -> Self:
+        """Disallow wildcard or non-HTTPS browser origins in production."""
+        if self.environment.lower() != 'production':
+            return self
+        for origin in self.allowed_origins:
+            if origin == '*':
+                msg = 'Wildcard CORS origin is not allowed when ENVIRONMENT=production'
+                raise ValueError(msg)
+            if not origin.startswith('https://'):
+                msg = f'Production CORS origins must use HTTPS (got {origin!r})'
+                raise ValueError(msg)
+        return self
 
     def set_logger(self, logger: logging.Logger) -> None:
         """

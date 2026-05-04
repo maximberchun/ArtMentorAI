@@ -71,6 +71,7 @@ def app_config(monkeypatch: pytest.MonkeyPatch) -> AppConfig:
     """Build AppConfig with test-safe environment variables."""
     monkeypatch.setenv('GEMINI__API_KEY', 'test-gemini-api-key')
     monkeypatch.setenv('SUPABASE__URL', 'https://example.supabase.co')
+    monkeypatch.setenv('SUPABASE__ANON_KEY', 'test-anon-key')
 
     config = AppConfig()
     config.set_logger(logging.getLogger('tests'))
