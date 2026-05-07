@@ -8,6 +8,7 @@ and portfolio items in a single collection, distinguished by payload ``type``.
 from __future__ import annotations
 
 import logging
+from time import perf_counter
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -250,6 +251,25 @@ class VectorService:
     """
 
     DISTANCE_METRIC = Distance.COSINE
+    USER_ID_INDEX_FIELD = 'user_id'
+    TYPE_INDEX_FIELD = 'type'
+
+    @staticmethod
+    def _qdrant_client_kwargs(config: AppConfig) -> dict[str, Any]:
+        """Build Qdrant client kwargs supporting host/port and managed URL forms."""
+        raw_url = (config.qdrant_url or '').strip()
+        raw_host = (config.qdrant_host or '').strip()
+        common: dict[str, Any] = {
+            'api_key': config.qdrant_api_key,
+            'timeout': config.qdrant_timeout_seconds,
+        }
+
+        # Qdrant Cloud commonly provides a full HTTPS endpoint.
+        if raw_url:
+            return {**common, 'url': raw_url}
+        if raw_host.startswith('http://') or raw_host.startswith('https://'):
+            return {**common, 'url': raw_host}
+        return {**common, 'host': raw_host or 'localhost', 'port': config.qdrant_port}
 
     def __init__(
         self,
@@ -274,23 +294,28 @@ class VectorService:
 
         try:
             # Initialize Qdrant client
-            self.client = QdrantClient(
-                host=self.host,
-                port=self.port,
-                api_key=config.qdrant_api_key,
-                timeout=config.qdrant_timeout_seconds,
-            )
-            self.logger.debug('Connected to Qdrant at %s:%s', self.host, self.port)
+            client_kwargs = self._qdrant_client_kwargs(config)
+            self.client = QdrantClient(**client_kwargs)
+            endpoint_hint = client_kwargs.get('url') or f'{self.host}:{self.port}'
+            self.logger.debug('Connected to Qdrant at %s', endpoint_hint)
 
-            # Initialize embedding model (downloads on first use)
+            # Initialize embedding model (downloads on first use if cache missing)
+            embedding_init_start = perf_counter()
             self.embedding_model = FlagEmbedding(
                 model_name=self.embedding_model_name,
                 cache_folder=config.embedding_cache_folder,
             )
-            self.logger.debug('Loaded embedding model: %s', self.embedding_model_name)
+            embedding_init_duration = perf_counter() - embedding_init_start
+            self.logger.info(
+                'Loaded embedding model: %s (cache_folder=%s, init_time=%.2fs)',
+                self.embedding_model_name,
+                config.embedding_cache_folder,
+                embedding_init_duration,
+            )
 
             # Ensure collection exists
             self._ensure_collection_exists()
+            self._ensure_payload_indexes()
             self.logger.info('VectorService initialized with collection: %s', self.collection_name)
 
         except Exception as e:
@@ -327,6 +352,26 @@ class VectorService:
         except (ResponseHandlingException, UnexpectedResponse) as e:
             self.logger.exception('Failed to manage collection %s', self.collection_name)
             msg = f'Failed to manage collection {self.collection_name}: {e!s}'
+            raise RuntimeError(msg) from e
+
+    def _ensure_payload_indexes(self) -> None:
+        """Ensure required payload indexes exist for filtered queries."""
+        try:
+            field_schema = getattr(models.PayloadSchemaType, 'KEYWORD', 'keyword')
+            for field_name in (self.USER_ID_INDEX_FIELD, self.TYPE_INDEX_FIELD):
+                self.client.create_payload_index(
+                    collection_name=self.collection_name,
+                    field_name=field_name,
+                    field_schema=field_schema,
+                    wait=True,
+                )
+                self.logger.debug('Ensured payload index exists for field: %s', field_name)
+        except (ResponseHandlingException, UnexpectedResponse) as e:
+            self.logger.exception(
+                'Failed to ensure required payload indexes for collection %s',
+                self.collection_name,
+            )
+            msg = f'Failed to ensure required payload indexes: {e!s}'
             raise RuntimeError(msg) from e
 
     def _validate_critique(self, critique: ArtCritique) -> None:

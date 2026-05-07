@@ -89,6 +89,10 @@ class AppConfig(BaseSettings):
     )
     qdrant_host: str = Field(default='localhost', description='Qdrant host')
     qdrant_port: int = Field(default=6333, description='Qdrant HTTP port')
+    qdrant_url: str | None = Field(
+        default=None,
+        description='Optional full Qdrant URL (preferred for managed TLS endpoints)',
+    )
     qdrant_api_key: str | None = Field(
         default=None,
         description='Optional Qdrant API key',

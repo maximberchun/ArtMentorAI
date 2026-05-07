@@ -3,6 +3,7 @@
 import asyncio
 import os
 from collections.abc import Callable
+from time import monotonic
 from typing import Any
 
 import httpx
@@ -182,6 +183,10 @@ _WEB_SEARCH_SYSTEM_INSTRUCTIONS = """
 class AgentService:
     """Service for AI-powered artwork analysis using Pydantic AI and Gemini."""
     _GEMINI_FALLBACK_HTTP_STATUSES = frozenset({503, 429})
+    _MAX_ATTEMPTS_PER_MODEL = 2
+    _BASE_RETRY_DELAY_SECONDS = 1.0
+    _SERVICE_UNAVAILABLE_COOLDOWN_SECONDS = 10.0
+    _QUOTA_COOLDOWN_SECONDS = 30.0
 
     def __init__(self, config: AppConfig) -> None:
         """
@@ -194,6 +199,9 @@ class AgentService:
         self.logger = config.logger
         self._search_calls_used = 0
         self._model_run_timeout_seconds = float(config.gemini.timeout_seconds)
+        self._cooldown_until_monotonic = 0.0
+        self._cooldown_error_code = 'SERVICE_UNAVAILABLE'
+        self._cooldown_message = 'AI service is temporarily unavailable. Please try again later.'
 
         # Initialize Gemini model
         os.environ['GEMINI_API_KEY'] = config.gemini.api_key
@@ -260,6 +268,31 @@ class AgentService:
 
         self.logger.info('AgentService initialized successfully')
 
+    def _arm_cooldown(self, *, error_code: str, message: str, retry_after: float | None) -> None:
+        """Arm a short in-process cooldown after provider pressure signals."""
+        fallback_seconds = (
+            self._QUOTA_COOLDOWN_SECONDS
+            if error_code == 'QUOTA_EXCEEDED'
+            else self._SERVICE_UNAVAILABLE_COOLDOWN_SECONDS
+        )
+        delay_seconds = retry_after if retry_after is not None else fallback_seconds
+        delay_seconds = max(1.0, float(delay_seconds))
+        self._cooldown_until_monotonic = monotonic() + delay_seconds
+        self._cooldown_error_code = error_code
+        self._cooldown_message = message
+        self.logger.warning(
+            'Armed Gemini cooldown for %.1fs (code=%s)',
+            delay_seconds,
+            error_code,
+        )
+
+    def _active_cooldown(self) -> tuple[float, str, str] | None:
+        """Return remaining cooldown seconds and metadata, if active."""
+        remaining = self._cooldown_until_monotonic - monotonic()
+        if remaining <= 0:
+            return None
+        return remaining, self._cooldown_error_code, self._cooldown_message
+
     def _build_analysis_agent(self, model_name: str) -> Agent:
         agent = Agent(
             model=model_name,
@@ -296,43 +329,76 @@ class AgentService:
         build_for_model: Callable[[str], Agent],
         op_name: str,
     ) -> Any:
-        """Run primary model, then fallbacks on HTTP 503/429 or client-side run timeout."""
+        """Run primary model with retries, then fallbacks on retryable failures."""
         models = self.config.gemini.model_try_chain()
         for idx, model in enumerate(models):
             agent = primary_agent if idx == 0 else build_for_model(model)
-            try:
-                if idx > 0:
-                    self.logger.warning(
-                        'Retrying %s with fallback Gemini model %s (%d/%d)',
-                        op_name,
-                        model,
-                        idx + 1,
-                        len(models),
+            if idx > 0:
+                self.logger.warning(
+                    'Retrying %s with fallback Gemini model %s (%d/%d)',
+                    op_name,
+                    model,
+                    idx + 1,
+                    len(models),
+                )
+            for attempt in range(1, self._MAX_ATTEMPTS_PER_MODEL + 1):
+                is_last_model = idx >= len(models) - 1
+                is_last_attempt = attempt >= self._MAX_ATTEMPTS_PER_MODEL
+                try:
+                    return await asyncio.wait_for(
+                        agent.run(message),
+                        timeout=self._model_run_timeout_seconds,
                     )
-                return await asyncio.wait_for(
-                    agent.run(message),
-                    timeout=self._model_run_timeout_seconds,
-                )
-            except TimeoutError:
-                if idx >= len(models) - 1:
-                    raise
-                self.logger.warning(
-                    'Gemini model %s timed out after %ss for %s; trying next model in chain',
-                    model,
-                    self._model_run_timeout_seconds,
-                    op_name,
-                )
-            except ModelHTTPError as e:
-                if e.status_code not in self._GEMINI_FALLBACK_HTTP_STATUSES:
-                    raise
-                if idx >= len(models) - 1:
-                    raise
-                self.logger.warning(
-                    'Gemini model %s returned HTTP %s for %s; trying next model in chain',
-                    model,
-                    e.status_code,
-                    op_name,
-                )
+                except TimeoutError:
+                    if is_last_model and is_last_attempt:
+                        raise
+                    if is_last_attempt:
+                        self.logger.warning(
+                            'Gemini model %s timed out after %ss for %s; trying next model in chain',
+                            model,
+                            self._model_run_timeout_seconds,
+                            op_name,
+                        )
+                        break
+                    delay_seconds = self._BASE_RETRY_DELAY_SECONDS * attempt
+                    self.logger.warning(
+                        'Gemini model %s timed out for %s (attempt %d/%d); retrying in %.1fs',
+                        model,
+                        op_name,
+                        attempt,
+                        self._MAX_ATTEMPTS_PER_MODEL,
+                        delay_seconds,
+                    )
+                    await asyncio.sleep(delay_seconds)
+                except ModelHTTPError as e:
+                    if e.status_code not in self._GEMINI_FALLBACK_HTTP_STATUSES:
+                        raise
+                    retry_delay = self._extract_retry_delay(e.body)
+                    if is_last_model and is_last_attempt:
+                        raise
+                    if is_last_attempt:
+                        self.logger.warning(
+                            'Gemini model %s returned HTTP %s for %s; trying next model in chain',
+                            model,
+                            e.status_code,
+                            op_name,
+                        )
+                        break
+                    delay_seconds = (
+                        retry_delay
+                        if retry_delay is not None
+                        else self._BASE_RETRY_DELAY_SECONDS * attempt
+                    )
+                    self.logger.warning(
+                        'Gemini model %s returned HTTP %s for %s (attempt %d/%d); retrying in %.1fs',
+                        model,
+                        e.status_code,
+                        op_name,
+                        attempt,
+                        self._MAX_ATTEMPTS_PER_MODEL,
+                        delay_seconds,
+                    )
+                    await asyncio.sleep(delay_seconds)
         raise RuntimeError('unreachable model fallback loop')  # pragma: no cover
 
     def _register_web_search_tool(self, target_agent: Agent) -> None:
@@ -646,6 +712,19 @@ class AgentService:
             ValueError: If there's an error calling Gemini or validating the response.
         """
         try:
+            active_cooldown = self._active_cooldown()
+            if active_cooldown is not None:
+                remaining, error_code, message = active_cooldown
+                self.logger.warning(
+                    'Skipping Gemini call due to active cooldown (code=%s, remaining=%.1fs)',
+                    error_code,
+                    remaining,
+                )
+                raise AIServiceError(
+                    message=message,
+                    error_code=error_code,
+                    retry_after=remaining,
+                )
             self._search_calls_used = 0
             # Create user prompt
             prompt = self._build_prompt(
@@ -702,15 +781,28 @@ class AgentService:
             self.logger.error('Gemini API error: %s (status=%s)', e.message, e.status_code)
             if e.status_code == 429:
                 retry_after = self._extract_retry_delay(e.body)
+                message = 'AI service quota exceeded. Please wait a moment before trying again.'
+                self._arm_cooldown(
+                    error_code='QUOTA_EXCEEDED',
+                    message=message,
+                    retry_after=retry_after,
+                )
                 raise AIServiceError(
-                    message='AI service quota exceeded. Please wait a moment before trying again.',
+                    message=message,
                     error_code='QUOTA_EXCEEDED',
                     retry_after=retry_after,
                 ) from e
             elif e.status_code == 503:
-                raise AIServiceError(
-                    message='AI service is temporarily unavailable. Please try again later.',
+                message = 'AI service is temporarily unavailable. Please try again later.'
+                self._arm_cooldown(
                     error_code='SERVICE_UNAVAILABLE',
+                    message=message,
+                    retry_after=None,
+                )
+                raise AIServiceError(
+                    message=message,
+                    error_code='SERVICE_UNAVAILABLE',
+                    retry_after=self._SERVICE_UNAVAILABLE_COOLDOWN_SECONDS,
                 ) from e
             else:
                 raise AIServiceError(
@@ -732,6 +824,8 @@ class AgentService:
                 message='AI request timed out. Please try again.',
                 error_code='TIMEOUT',
             ) from e
+        except AIServiceError:
+            raise
         except Exception as e:
             self.logger.exception('Error analyzing image')
             msg = f'Gemini image analysis error: {e!s}'

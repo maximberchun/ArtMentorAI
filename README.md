@@ -69,3 +69,4 @@ uv build
 ## 📚 Documentation
 
 - **MVP API contracts (stable)**: see `docs/api-contracts.md`
+- **Deployment appendix (thesis/demo runbook)**: see `docs/deployment-appendix.md`

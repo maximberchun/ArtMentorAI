@@ -9,6 +9,7 @@ ENV PYTHONUNBUFFERED=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON=/usr/local/bin/python \
+    EMBEDDING_CACHE_FOLDER=/opt/embeddings_cache \
     SERVER__HOST=0.0.0.0 \
     SERVER__PORT=8000
 
@@ -18,9 +19,12 @@ COPY pyproject.toml uv.lock README.md LICENSE ./
 COPY src ./src
 
 RUN uv sync --frozen --no-dev
+RUN /app/.venv/bin/python -c "from fastembed.embedding import FlagEmbedding; FlagEmbedding(model_name='BAAI/bge-small-en-v1.5', cache_folder='/opt/embeddings_cache')"
 
 RUN groupadd --gid 1000 app \
     && useradd --uid 1000 --gid app --no-log-init --home-dir /app --shell /usr/sbin/nologin app \
+    && mkdir -p /opt/embeddings_cache \
+    && chown -R app:app /opt/embeddings_cache \
     && chown -R app:app /app
 
 USER app

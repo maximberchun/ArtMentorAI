@@ -22,11 +22,22 @@ Vite inlines only `VITE_*` variables at build time. After changing `.env`, resta
 
 ### Supabase redirect URLs
 
-For Google OAuth and email magic links, add your app origin under Supabase **Authentication → URL configuration** (e.g. `http://localhost:5173` for local Vite).
+For Google OAuth and email magic links, configure Supabase **Authentication → URL configuration**:
+
+- **Site URL**: your frontend origin (example: `https://app.example.com`)
+- **Redirect URLs**: include your sign-in callback URL (example: `https://app.example.com/sign-in`)
+- Keep local dev URLs (`http://localhost:5173`, `http://127.0.0.1:5173/sign-in`) only for development projects/environments.
+
+If you use Google OAuth, ensure the same Supabase callback URL is allowed in Google Cloud Console for your OAuth client.
 
 ### Backend CORS
 
-The API must allow this origin. The Python app defaults include `http://localhost:5173`; override with `ALLOWED_ORIGINS` in the API `.env` if you use another host or port.
+The API must allow only the frontend origin for each environment:
+
+- local example: `ALLOWED_ORIGINS=["http://localhost:5173"]`
+- production example: `ALLOWED_ORIGINS=["https://app.example.com"]`
+
+For production, avoid wildcard origins and avoid mixing multiple unrelated origins in one deployment.
 
 ## Scripts
 
