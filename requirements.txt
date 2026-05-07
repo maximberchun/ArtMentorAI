@@ -6,7 +6,7 @@ python-multipart>=0.0.27
 
 # Configuration and environment
 pydantic>=2.10.0,<3.0.0
-pydantic-settings>=2.0.0
+pydantic-settings>=2.14.0
 python-dotenv
 
 # AI/ML
