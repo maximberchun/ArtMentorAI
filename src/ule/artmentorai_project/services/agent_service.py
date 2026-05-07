@@ -270,6 +270,10 @@ class AgentService:
 
     def _arm_cooldown(self, *, error_code: str, message: str, retry_after: float | None) -> None:
         """Arm a short in-process cooldown after provider pressure signals."""
+        if not hasattr(self, '_cooldown_until_monotonic'):
+            self._cooldown_until_monotonic = 0.0
+            self._cooldown_error_code = 'SERVICE_UNAVAILABLE'
+            self._cooldown_message = 'AI service is temporarily unavailable. Please try again later.'
         fallback_seconds = (
             self._QUOTA_COOLDOWN_SECONDS
             if error_code == 'QUOTA_EXCEEDED'
@@ -288,10 +292,17 @@ class AgentService:
 
     def _active_cooldown(self) -> tuple[float, str, str] | None:
         """Return remaining cooldown seconds and metadata, if active."""
-        remaining = self._cooldown_until_monotonic - monotonic()
+        cooldown_until = getattr(self, '_cooldown_until_monotonic', 0.0)
+        cooldown_code = getattr(self, '_cooldown_error_code', 'SERVICE_UNAVAILABLE')
+        cooldown_message = getattr(
+            self,
+            '_cooldown_message',
+            'AI service is temporarily unavailable. Please try again later.',
+        )
+        remaining = cooldown_until - monotonic()
         if remaining <= 0:
             return None
-        return remaining, self._cooldown_error_code, self._cooldown_message
+        return remaining, cooldown_code, cooldown_message
 
     def _build_analysis_agent(self, model_name: str) -> Agent:
         agent = Agent(
@@ -350,9 +361,7 @@ class AgentService:
                         timeout=self._model_run_timeout_seconds,
                     )
                 except TimeoutError:
-                    if is_last_model and is_last_attempt:
-                        raise
-                    if is_last_attempt:
+                    if not is_last_model:
                         self.logger.warning(
                             'Gemini model %s timed out after %ss for %s; trying next model in chain',
                             model,
@@ -360,6 +369,8 @@ class AgentService:
                             op_name,
                         )
                         break
+                    if is_last_attempt:
+                        raise
                     delay_seconds = self._BASE_RETRY_DELAY_SECONDS * attempt
                     self.logger.warning(
                         'Gemini model %s timed out for %s (attempt %d/%d); retrying in %.1fs',

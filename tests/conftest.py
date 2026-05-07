@@ -19,9 +19,12 @@ SRC_PATH = PROJECT_ROOT / 'src'
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
-from slowapi import Limiter  # noqa: E402
-from slowapi.middleware import SlowAPIMiddleware  # noqa: E402
-from slowapi.util import get_remote_address  # noqa: E402
+try:
+    from slowapi import Limiter  # noqa: E402
+    from slowapi.middleware import SlowAPIMiddleware  # noqa: E402
+    from slowapi.util import get_remote_address  # noqa: E402
+except ModuleNotFoundError:
+    raise
 
 from ule.artmentorai_project.cli import create_app  # noqa: E402
 from ule.artmentorai_project.config import AppConfig  # noqa: E402

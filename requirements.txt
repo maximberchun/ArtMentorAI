@@ -1,5 +1,6 @@
 # Core FastAPI stack
 fastapi>=0.115.0
+slowapi>=0.1.9
 uvicorn[standard]
 python-multipart
 
