@@ -64,3 +64,39 @@ npm run lint
 - `src/lib/supabase.ts` — Supabase client (persisted session, refresh, OAuth callback handling).
 - `src/lib/api.ts` — `apiFetch` / `apiJson` helpers for the FastAPI backend.
 - `src/App.tsx` — Example routes: home (session + sample `GET /auth/me`) and sign-in.
+
+## Production hosting (selected: Vercel)
+
+This repo is configured for **Vercel** static hosting for the SPA.
+
+Project settings in Vercel:
+
+- **Root Directory**: `frontend`
+- **Build Command**: `npm run build`
+- **Output Directory**: `dist`
+
+Environment variables in Vercel (Production and Preview as needed):
+
+- `VITE_SUPABASE_URL`
+- `VITE_SUPABASE_ANON_KEY`
+- `VITE_API_BASE_URL` (production API origin, no trailing slash)
+
+SPA fallback is explicitly configured in `frontend/vercel.json` so deep links (for example `/sign-in`) rewrite to `index.html`.
+
+## Production rollout checklist (ArtMentorAI)
+
+Use this checklist for the production deployment at `https://artmentorai.com`.
+
+1. In Vercel project settings (`frontend` root), set Production environment variables and redeploy:
+   - `VITE_SUPABASE_URL` = your production Supabase project URL
+   - `VITE_SUPABASE_ANON_KEY` = production anon public key
+   - `VITE_API_BASE_URL` = Fly API HTTPS origin with no trailing slash (for example `https://artmentorai-api.fly.dev` or `https://api.artmentorai.com`)
+2. Confirm SPA fallback:
+   - `frontend/vercel.json` rewrites all routes to `index.html`
+   - If a different static provider is used, configure equivalent fallback (`/* -> /index.html`)
+3. DNS and auth/cors alignment:
+   - Point `artmentorai.com` to the static host target from your provider
+   - In Supabase Authentication URL configuration:
+     - Site URL: `https://artmentorai.com`
+     - Redirect URLs include: `https://artmentorai.com/sign-in`
+   - Ensure Fly API `ALLOWED_ORIGINS` exactly matches the frontend origin (`https://artmentorai.com`)
