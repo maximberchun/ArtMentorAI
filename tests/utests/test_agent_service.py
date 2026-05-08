@@ -350,3 +350,59 @@ def test_analyze_image_retries_with_fallback_model_on_client_timeout(
     assert result.score == 7
     assert calls['n'] == 2
     assert isinstance(fallback_agent.last_message, list)
+
+
+def test_looks_incomplete_reply_detects_mid_sentence_cutoff() -> None:
+    """Long responses that end without terminal punctuation should be treated as incomplete."""
+    service = _build_service(_CapturingAgent({'reply': 'unused'}))
+    incomplete = 'This is a fairly long answer that keeps explaining drawing fundamentals and practice'
+    incomplete = f'{incomplete} methods and recommended resources for beginners'
+    assert service._looks_incomplete_reply(incomplete)
+    assert not service._looks_incomplete_reply('Short reply.')
+
+
+def test_answer_conversation_requests_one_continuation_when_reply_looks_truncated() -> None:
+    """Chat flow should request one continuation pass for abruptly cut responses."""
+
+    primary_reply = {
+        'reply': (
+            'Learning to draw starts with line, shape, value, and perspective. '
+            'Practice 20 minutes daily with gesture and simple still lifes'
+        ),
+        'analysis': None,
+    }
+    continuation_reply = {
+        'reply': 'Then study composition and anatomy in small focused drills.',
+        'analysis': None,
+    }
+    calls: list[str] = []
+
+    async def _fake_run_with_fallback(*, message, primary_agent, build_for_model, op_name):  # noqa: ANN001
+        calls.append(op_name)
+        if len(calls) == 1:
+            return _FakeRunResult(primary_reply)
+        assert 'PARTIAL PREVIOUS REPLY' in message
+        return _FakeRunResult(continuation_reply)
+
+    service = AgentService.__new__(AgentService)
+    service.config = SimpleNamespace(
+        gemini=_GeminiConfigStub(),
+        web_search_enabled=False,
+    )
+    service.logger = logging.getLogger('tests.agent_service')
+    service.chat_agent = object()
+    service._build_chat_agent = lambda _model: object()  # type: ignore[method-assign]
+    service._run_agent_with_model_fallback = _fake_run_with_fallback  # type: ignore[method-assign]
+    service._search_calls_used = 0
+    service._model_run_timeout_seconds = 60.0
+
+    result = asyncio.run(
+        service.answer_conversation(
+            user_input='How do I learn to draw?',
+            profile_context=None,
+            conversation_context=None,
+        )
+    )
+
+    assert calls == ['conversation chat', 'conversation chat continuation']
+    assert 'Then study composition and anatomy' in result.reply

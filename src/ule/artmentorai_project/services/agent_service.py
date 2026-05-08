@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import random
 from collections.abc import Callable
 from time import monotonic
 from typing import Any
@@ -183,8 +184,11 @@ _WEB_SEARCH_SYSTEM_INSTRUCTIONS = """
 class AgentService:
     """Service for AI-powered artwork analysis using Pydantic AI and Gemini."""
     _GEMINI_FALLBACK_HTTP_STATUSES = frozenset({503, 429})
-    _MAX_ATTEMPTS_PER_MODEL = 2
+    _MAX_ATTEMPTS_PER_MODEL = 4
     _BASE_RETRY_DELAY_SECONDS = 1.0
+    _MAX_RETRY_DELAY_SECONDS = 8.0
+    _RETRY_JITTER_RATIO = 0.25
+    _CHAT_REPLY_MAX_CHARS = 12000
     _SERVICE_UNAVAILABLE_COOLDOWN_SECONDS = 10.0
     _QUOTA_COOLDOWN_SECONDS = 30.0
 
@@ -361,17 +365,17 @@ class AgentService:
                         timeout=self._model_run_timeout_seconds,
                     )
                 except TimeoutError:
-                    if not is_last_model:
-                        self.logger.warning(
-                            'Gemini model %s timed out after %ss for %s; trying next model in chain',
-                            model,
-                            self._model_run_timeout_seconds,
-                            op_name,
-                        )
-                        break
                     if is_last_attempt:
+                        if not is_last_model:
+                            self.logger.warning(
+                                'Gemini model %s timed out after %ss for %s; trying next model in chain',
+                                model,
+                                self._model_run_timeout_seconds,
+                                op_name,
+                            )
+                            break
                         raise
-                    delay_seconds = self._BASE_RETRY_DELAY_SECONDS * attempt
+                    delay_seconds = self._compute_retry_delay(attempt=attempt)
                     self.logger.warning(
                         'Gemini model %s timed out for %s (attempt %d/%d); retrying in %.1fs',
                         model,
@@ -395,10 +399,9 @@ class AgentService:
                             op_name,
                         )
                         break
-                    delay_seconds = (
-                        retry_delay
-                        if retry_delay is not None
-                        else self._BASE_RETRY_DELAY_SECONDS * attempt
+                    delay_seconds = self._compute_retry_delay(
+                        attempt=attempt,
+                        retry_after=retry_delay,
                     )
                     self.logger.warning(
                         'Gemini model %s returned HTTP %s for %s (attempt %d/%d); retrying in %.1fs',
@@ -411,6 +414,21 @@ class AgentService:
                     )
                     await asyncio.sleep(delay_seconds)
         raise RuntimeError('unreachable model fallback loop')  # pragma: no cover
+
+    def _compute_retry_delay(self, *, attempt: int, retry_after: float | None = None) -> float:
+        """Compute bounded exponential backoff with jitter for Gemini retries."""
+        if retry_after is not None and retry_after > 0:
+            return min(retry_after, self._MAX_RETRY_DELAY_SECONDS)
+
+        base_delay = min(
+            self._MAX_RETRY_DELAY_SECONDS,
+            self._BASE_RETRY_DELAY_SECONDS * (2 ** (attempt - 1)),
+        )
+        jitter = random.uniform(
+            1.0 - self._RETRY_JITTER_RATIO,
+            1.0 + self._RETRY_JITTER_RATIO,
+        )
+        return max(0.1, base_delay * jitter)
 
     def _register_web_search_tool(self, target_agent: Agent) -> None:
         """Register a bounded web-search tool when enabled and configured."""
@@ -610,6 +628,39 @@ class AgentService:
                 conversation_context=conversation_context.strip(),
             )
         return prompt
+
+    @staticmethod
+    def _build_chat_continuation_turn(
+        user_input: str,
+        partial_reply: str,
+        profile_context: str | None,
+        conversation_context: str | None,
+    ) -> str:
+        """Prompt a one-shot continuation when the model ended mid-answer."""
+        prompt = (
+            f'USER QUESTION (for context):\n{user_input.strip()}\n\n'
+            'Your previous answer ended abruptly. Continue from exactly where you stopped.\n'
+            'Do not repeat previous sections, headings, or bullets.\n'
+            'Return only the continuation text in `reply`.'
+            f'\n\nPARTIAL PREVIOUS REPLY:\n{partial_reply.rstrip()}'
+        )
+        if profile_context and profile_context.strip():
+            prompt += _PROFILE_CONTEXT_SECTION.format(profile_context=profile_context.strip())
+        if conversation_context and conversation_context.strip():
+            prompt += _CONVERSATION_CONTEXT_SECTION.format(
+                conversation_context=conversation_context.strip(),
+            )
+        return prompt
+
+    @staticmethod
+    def _looks_incomplete_reply(reply: str) -> bool:
+        """Heuristic for cut-off outputs (e.g. abrupt ending in the middle of a sentence)."""
+        trimmed = reply.rstrip()
+        if len(trimmed) < 200:
+            return False
+        if trimmed.endswith(('...', '…')):
+            return True
+        return not trimmed.endswith(('.', '!', '?', '"', "'", ')', ']', '`'))
 
     @staticmethod
     def _build_intent_user_turn(
@@ -874,6 +925,41 @@ class AgentService:
                     chat_data = ConversationChatResponse(**chat_data.model_dump())
                 else:
                     chat_data = ConversationChatResponse.model_validate(chat_data)
+
+            if self._looks_incomplete_reply(chat_data.reply):
+                self.logger.warning(
+                    'Conversation chat reply appears truncated; requesting one continuation pass',
+                )
+                continuation_prompt = self._build_chat_continuation_turn(
+                    user_input=user_input,
+                    partial_reply=chat_data.reply,
+                    profile_context=profile_context,
+                    conversation_context=conversation_context,
+                )
+                continuation_result = await self._run_agent_with_model_fallback(
+                    message=continuation_prompt,
+                    primary_agent=self.chat_agent,
+                    build_for_model=self._build_chat_agent,
+                    op_name='conversation chat continuation',
+                )
+                continuation_data = continuation_result.output
+                if not isinstance(continuation_data, ConversationChatResponse):
+                    if isinstance(continuation_data, dict):
+                        continuation_data = ConversationChatResponse(**continuation_data)
+                    elif hasattr(continuation_data, 'model_dump'):
+                        continuation_data = ConversationChatResponse(
+                            **continuation_data.model_dump(),
+                        )
+                    else:
+                        continuation_data = ConversationChatResponse.model_validate(
+                            continuation_data,
+                        )
+                merged_reply = (
+                    f'{chat_data.reply.rstrip()}\n\n{continuation_data.reply.lstrip()}'
+                ).strip()
+                chat_data = chat_data.model_copy(
+                    update={'reply': merged_reply[: self._CHAT_REPLY_MAX_CHARS]},
+                )
             if chat_data.analysis is not None:
                 chat_data = chat_data.model_copy(update={'analysis': None})
             return chat_data  # noqa: TRY300
