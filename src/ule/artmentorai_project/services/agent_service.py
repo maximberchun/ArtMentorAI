@@ -365,15 +365,15 @@ class AgentService:
                         timeout=self._model_run_timeout_seconds,
                     )
                 except TimeoutError:
+                    if not is_last_model:
+                        self.logger.warning(
+                            'Gemini model %s timed out after %ss for %s; trying next model in chain',
+                            model,
+                            self._model_run_timeout_seconds,
+                            op_name,
+                        )
+                        break
                     if is_last_attempt:
-                        if not is_last_model:
-                            self.logger.warning(
-                                'Gemini model %s timed out after %ss for %s; trying next model in chain',
-                                model,
-                                self._model_run_timeout_seconds,
-                                op_name,
-                            )
-                            break
                         raise
                     delay_seconds = self._compute_retry_delay(attempt=attempt)
                     self.logger.warning(
@@ -656,7 +656,7 @@ class AgentService:
     def _looks_incomplete_reply(reply: str) -> bool:
         """Heuristic for cut-off outputs (e.g. abrupt ending in the middle of a sentence)."""
         trimmed = reply.rstrip()
-        if len(trimmed) < 200:
+        if len(trimmed) < 80:
             return False
         if trimmed.endswith(('...', '…')):
             return True
