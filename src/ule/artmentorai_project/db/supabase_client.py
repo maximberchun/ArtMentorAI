@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import httpx
+from postgrest.constants import DEFAULT_POSTGREST_CLIENT_TIMEOUT
+from supabase.lib.client_options import AsyncClientOptions, SyncClientOptions
+
 if TYPE_CHECKING:
     from supabase import AsyncClient, Client
 
@@ -27,6 +31,31 @@ def _raise_client_import_error(client_type: str, factory_name: str, exc: ImportE
     raise RuntimeError(msg) from exc
 
 
+def _service_role_httpx_timeout() -> httpx.Timeout:
+    return httpx.Timeout(DEFAULT_POSTGREST_CLIENT_TIMEOUT)
+
+
+def _sync_service_client_options() -> SyncClientOptions:
+    """PostgREST defaults to HTTP/2; Supabase edge often drops HTTP/2 mid-request."""
+    return SyncClientOptions(
+        httpx_client=httpx.Client(
+            timeout=_service_role_httpx_timeout(),
+            follow_redirects=True,
+            http2=False,
+        )
+    )
+
+
+def _async_service_client_options() -> AsyncClientOptions:
+    return AsyncClientOptions(
+        httpx_client=httpx.AsyncClient(
+            timeout=_service_role_httpx_timeout(),
+            follow_redirects=True,
+            http2=False,
+        )
+    )
+
+
 async def create_supabase_service_client(config: AppConfig) -> AsyncClient:
     """Return an async Supabase client using the service role key (bypasses RLS)."""
     url, service_role_key = _require_supabase_config(config)
@@ -34,7 +63,7 @@ async def create_supabase_service_client(config: AppConfig) -> AsyncClient:
         from supabase import acreate_client  # noqa: PLC0415
     except ImportError as exc:
         _raise_client_import_error('async', 'acreate_client', exc)
-    return await acreate_client(url, service_role_key)
+    return await acreate_client(url, service_role_key, _async_service_client_options())
 
 
 def create_sync_supabase_service_client(config: AppConfig) -> Client:
@@ -44,4 +73,4 @@ def create_sync_supabase_service_client(config: AppConfig) -> Client:
         from supabase import create_client  # noqa: PLC0415
     except ImportError as exc:
         _raise_client_import_error('sync', 'create_client', exc)
-    return create_client(url, service_role_key)
+    return create_client(url, service_role_key, _sync_service_client_options())
