@@ -6,7 +6,7 @@ from typing import Literal, Protocol, Self, runtime_checkable
 from pydantic import ConfigDict, Field, PrivateAttr, model_validator
 from pydantic_settings import BaseSettings
 
-from .gemini_config import GeminiConfig
+from .openrouter_config import OpenRouterConfig
 from .rate_limit_config import RateLimitConfig
 from .server_config import ServerConfig
 from .ssl_config import SSLConfig
@@ -78,7 +78,7 @@ class AppConfig(BaseSettings):
     # ============== Sub-configurations ==============
     server: ServerConfig = Field(default_factory=ServerConfig, description='Server configuration')
     ssl: SSLConfig = Field(default_factory=SSLConfig, description='SSL/TLS configuration')
-    gemini: GeminiConfig = Field(..., description='Google Gemini configuration')
+    openrouter: OpenRouterConfig = Field(..., description='OpenRouter LLM configuration')
     supabase: SupabaseConfig = Field(..., description='Supabase configuration (Auth/JWT)')
     upload: UploadConfig = Field(
         default_factory=UploadConfig, description='File upload configuration'

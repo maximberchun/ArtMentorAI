@@ -1,7 +1,7 @@
 """Endpoints for artwork analysis with long-term memory (RAG).
 
 This module provides REST endpoints for:
-- Artwork critique generation using Gemini AI
+- Artwork critique generation using an OpenRouter-routed LLM (Pydantic AI)
 - Automatic storage in vector database for future reference
 - Multimodal input support (image + optional user comments)
 - Error handling that doesn't break the API if vector DB is down
@@ -423,7 +423,7 @@ async def execute_critique_request(  # noqa: C901, PLR0912, PLR0913, PLR0915
                     user.user_id,
                 )
 
-        # Analyze with Gemini AI agent
+        # Analyze with the configured LLM agent (OpenRouter)
         result = await agent_service.analyze_image(
             image_bytes=image_bytes,
             mime_type=mime_type,

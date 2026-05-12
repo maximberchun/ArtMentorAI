@@ -8,7 +8,7 @@ from ule.artmentorai_project.config import AppConfig
 
 
 def test_production_requires_https_origins(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv('GEMINI__API_KEY', 'k')
+    monkeypatch.setenv('OPENROUTER__API_KEY', 'k')
     monkeypatch.setenv('SUPABASE__URL', 'https://x.supabase.co')
     monkeypatch.setenv('ENVIRONMENT', 'production')
     monkeypatch.setenv(
@@ -20,7 +20,7 @@ def test_production_requires_https_origins(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_production_rejects_wildcard_origin(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv('GEMINI__API_KEY', 'k')
+    monkeypatch.setenv('OPENROUTER__API_KEY', 'k')
     monkeypatch.setenv('SUPABASE__URL', 'https://x.supabase.co')
     monkeypatch.setenv('ENVIRONMENT', 'production')
     monkeypatch.setenv('ALLOWED_ORIGINS', '["*"]')
@@ -29,7 +29,7 @@ def test_production_rejects_wildcard_origin(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def test_development_allows_http_origins(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv('GEMINI__API_KEY', 'k')
+    monkeypatch.setenv('OPENROUTER__API_KEY', 'k')
     monkeypatch.setenv('SUPABASE__URL', 'https://x.supabase.co')
     monkeypatch.setenv('ENVIRONMENT', 'development')
     cfg = AppConfig()
@@ -38,7 +38,7 @@ def test_development_allows_http_origins(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_default_cors_methods_are_explicit_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv('GEMINI__API_KEY', 'k')
+    monkeypatch.setenv('OPENROUTER__API_KEY', 'k')
     monkeypatch.setenv('SUPABASE__URL', 'https://x.supabase.co')
     cfg = AppConfig()
     methods = set(cfg.cors_allow_methods)
@@ -48,7 +48,7 @@ def test_default_cors_methods_are_explicit_allowlist(monkeypatch: pytest.MonkeyP
 
 
 def test_default_cors_headers_include_auth_and_content_type(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv('GEMINI__API_KEY', 'k')
+    monkeypatch.setenv('OPENROUTER__API_KEY', 'k')
     monkeypatch.setenv('SUPABASE__URL', 'https://x.supabase.co')
     cfg = AppConfig()
     headers = {h.lower() for h in cfg.cors_allow_headers}

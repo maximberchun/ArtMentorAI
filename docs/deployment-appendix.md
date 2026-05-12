@@ -11,21 +11,21 @@ flowchart LR
   API[FastAPI Machine]
   Qdrant[Qdrant Cloud]
   Supabase[Supabase]
-  Gemini[Google Gemini]
+  OpenRouter[OpenRouter]
   Serper[Serper optional]
 
   Users --> FlyProxy
   FlyProxy --> API
   API --> Qdrant
   API --> Supabase
-  API --> Gemini
+  API --> OpenRouter
   API --> Serper
 ```
 
 ## Secrets Policy
 
 - Do not commit real credentials to git. Keep `.env` local only; use `.env.example` as the template.
-- Store production secrets with `fly secrets set` (for example: `GEMINI__API_KEY`, `SUPABASE__SERVICE_ROLE_KEY`, `QDRANT_API_KEY`, `WEB_SEARCH_API_KEY`).
+- Store production secrets with `fly secrets set` (for example: `OPENROUTER__API_KEY`, `SUPABASE__SERVICE_ROLE_KEY`, `QDRANT_API_KEY`, `WEB_SEARCH_API_KEY`).
 - Keep non-secret runtime settings in `fly.toml` `[env]` when appropriate (for example: `ENVIRONMENT=production`, `SERVER__HOST=0.0.0.0`, `SERVER__PORT=8000`, `DEBUG=false`).
 - Restrict CORS in production to known frontend origins only; do not use wildcard origins with credentials.
 - Rotate keys immediately if any secret is exposed in logs, screenshots, or commit history.
@@ -55,6 +55,6 @@ These are rough planning numbers and depend on traffic, region, and provider pri
 - Fly.io API machine (1 always-on shared-cpu VM, ~1 GB RAM): low tens of USD per month.
 - Qdrant Cloud (starter/free to small paid tier): free to low tens of USD per month.
 - Supabase: free tier for demo workloads, paid tiers if auth/storage/query limits are exceeded.
-- Gemini + Serper: usage-based; cost scales with request volume and prompt/token size.
+- OpenRouter + Serper: usage-based; cost scales with request volume and prompt/token size.
 
 **Typical demo budget range:** approximately 20-60 USD/month for a low-traffic deployment, excluding unusually heavy model usage.

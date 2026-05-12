@@ -30,17 +30,17 @@ class _CapturingAgent:
         return _FakeRunResult(self.output)
 
 
-class _GeminiConfigStub:
-    model_name = 'gemini-test'
+class _OpenRouterConfigStub:
+    model_name = 'google/model-test'
 
     def model_try_chain(self) -> tuple[str, ...]:
-        return ('gemini-test',)
+        return ('google/model-test',)
 
 
 def _build_service(agent) -> AgentService:
     service = AgentService.__new__(AgentService)
     service.config = SimpleNamespace(
-        gemini=_GeminiConfigStub(),
+        openrouter=_OpenRouterConfigStub(),
         web_search_enabled=False,
     )
     service.logger = logging.getLogger('tests.agent_service')
@@ -214,16 +214,16 @@ def test_analyze_image_normalizes_issue_and_drill_order_by_dependency() -> None:
     ]
 
 
-class _GeminiWithFallbackStub:
-    model_name = 'gemini-primary'
+class _OpenRouterWithFallbackStub:
+    model_name = 'google/model-primary'
 
     def model_try_chain(self) -> tuple[str, ...]:
-        return ('gemini-primary', 'gemini-fallback')
+        return ('google/model-primary', 'google/model-fallback')
 
 
 class _AgentRaises503:
     async def run(self, _message):
-        raise ModelHTTPError(503, 'gemini-primary', {})
+        raise ModelHTTPError(503, 'google/model-primary', {})
 
 
 def test_analyze_image_retries_with_fallback_model_on_503() -> None:
@@ -253,7 +253,7 @@ def test_analyze_image_retries_with_fallback_model_on_503() -> None:
     fallback_agent = _CapturingAgent(output_payload)
     service = AgentService.__new__(AgentService)
     service.config = SimpleNamespace(
-        gemini=_GeminiWithFallbackStub(),
+        openrouter=_OpenRouterWithFallbackStub(),
         web_search_enabled=False,
     )
     service.logger = logging.getLogger('tests.agent_service')
@@ -261,7 +261,7 @@ def test_analyze_image_retries_with_fallback_model_on_503() -> None:
     service._search_calls_used = 99
 
     def _build_fallback(model: str) -> _CapturingAgent:
-        assert model == 'gemini-fallback'
+        assert model == 'google/model-fallback'
         return fallback_agent
 
     service._build_analysis_agent = _build_fallback  # type: ignore[method-assign]
@@ -323,7 +323,7 @@ def test_analyze_image_retries_with_fallback_model_on_client_timeout(
     fallback_agent = _CapturingAgent(output_payload)
     service = AgentService.__new__(AgentService)
     service.config = SimpleNamespace(
-        gemini=_GeminiWithFallbackStub(),
+        openrouter=_OpenRouterWithFallbackStub(),
         web_search_enabled=False,
     )
     service.logger = logging.getLogger('tests.agent_service')
@@ -331,7 +331,7 @@ def test_analyze_image_retries_with_fallback_model_on_client_timeout(
     service._search_calls_used = 99
 
     def _build_fallback(model: str) -> _CapturingAgent:
-        assert model == 'gemini-fallback'
+        assert model == 'google/model-fallback'
         return fallback_agent
 
     service._build_analysis_agent = _build_fallback  # type: ignore[method-assign]
@@ -386,7 +386,7 @@ def test_answer_conversation_requests_one_continuation_when_reply_looks_truncate
 
     service = AgentService.__new__(AgentService)
     service.config = SimpleNamespace(
-        gemini=_GeminiConfigStub(),
+        openrouter=_OpenRouterConfigStub(),
         web_search_enabled=False,
     )
     service.logger = logging.getLogger('tests.agent_service')

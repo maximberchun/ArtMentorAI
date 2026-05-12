@@ -29,7 +29,7 @@ uv sync
 
 ### 3. Environment
 
-Copy `.env.example` to `.env` and fill in real values (at minimum you need a **Gemini** API key and a **Supabase** project URL for the app to start; other keys depend on the features you use).
+Copy `.env.example` to `.env` and fill in real values (at minimum you need an **OpenRouter** API key and a **Supabase** project URL for the app to start; other keys depend on the features you use).
 
 - **Unix/macOS:** `cp .env.example .env`
 - **Windows (PowerShell):** `Copy-Item .env.example .env`

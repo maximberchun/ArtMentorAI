@@ -1,7 +1,6 @@
-"""AI Agent service for artwork analysis using Pydantic AI and Gemini."""
+"""AI Agent service for artwork analysis using Pydantic AI and OpenRouter."""
 
 import asyncio
-import os
 import random
 from collections.abc import Callable
 from time import monotonic
@@ -10,6 +9,8 @@ from typing import Any
 import httpx
 from pydantic_ai import Agent, BinaryContent
 from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
+from pydantic_ai.models.openrouter import OpenRouterModel
+from pydantic_ai.providers.openrouter import OpenRouterProvider
 
 from ..config import AppConfig
 from ..exceptions import AIServiceError
@@ -182,8 +183,8 @@ _WEB_SEARCH_SYSTEM_INSTRUCTIONS = """
 
 
 class AgentService:
-    """Service for AI-powered artwork analysis using Pydantic AI and Gemini."""
-    _GEMINI_FALLBACK_HTTP_STATUSES = frozenset({503, 429})
+    """Service for AI-powered artwork analysis using Pydantic AI and OpenRouter."""
+    _PROVIDER_RETRYABLE_HTTP_STATUSES = frozenset({503, 429})
     _MAX_ATTEMPTS_PER_MODEL = 4
     _BASE_RETRY_DELAY_SECONDS = 1.0
     _MAX_RETRY_DELAY_SECONDS = 8.0
@@ -202,13 +203,16 @@ class AgentService:
         self.config = config
         self.logger = config.logger
         self._search_calls_used = 0
-        self._model_run_timeout_seconds = float(config.gemini.timeout_seconds)
+        self._model_run_timeout_seconds = float(config.openrouter.timeout_seconds)
         self._cooldown_until_monotonic = 0.0
         self._cooldown_error_code = 'SERVICE_UNAVAILABLE'
         self._cooldown_message = 'AI service is temporarily unavailable. Please try again later.'
 
-        # Initialize Gemini model
-        os.environ['GEMINI_API_KEY'] = config.gemini.api_key
+        self._openrouter_provider = OpenRouterProvider(
+            api_key=config.openrouter.api_key,
+            app_title=config.openrouter.app_title,
+            app_url=config.openrouter.app_url,
+        )
 
         # System Prompt - Defines the agent role
         system_prompt = """You are a rigorous studio art instructor focused on fundamentals-first coaching.
@@ -266,9 +270,10 @@ class AgentService:
             chat_system += _WEB_SEARCH_SYSTEM_INSTRUCTIONS
         self._chat_system_prompt = chat_system
 
-        self.agent = self._build_analysis_agent(config.gemini.model_name)
-        self.chat_agent = self._build_chat_agent(config.gemini.model_name)
-        self.intent_agent = self._build_intent_agent(config.gemini.model_name)
+        primary_slug = config.openrouter.model_try_chain()[0]
+        self.agent = self._build_analysis_agent(primary_slug)
+        self.chat_agent = self._build_chat_agent(primary_slug)
+        self.intent_agent = self._build_intent_agent(primary_slug)
 
         self.logger.info('AgentService initialized successfully')
 
@@ -289,7 +294,7 @@ class AgentService:
         self._cooldown_error_code = error_code
         self._cooldown_message = message
         self.logger.warning(
-            'Armed Gemini cooldown for %.1fs (code=%s)',
+            'Armed LLM provider cooldown for %.1fs (code=%s)',
             delay_seconds,
             error_code,
         )
@@ -308,9 +313,12 @@ class AgentService:
             return None
         return remaining, cooldown_code, cooldown_message
 
-    def _build_analysis_agent(self, model_name: str) -> Agent:
+    def _openrouter_model(self, model_slug: str) -> OpenRouterModel:
+        return OpenRouterModel(model_slug, provider=self._openrouter_provider)
+
+    def _build_analysis_agent(self, model_slug: str) -> Agent:
         agent = Agent(
-            model=model_name,
+            model=self._openrouter_model(model_slug),
             output_type=AnalysisResponse,
             system_prompt=self._analysis_system_prompt,
             retries=3,
@@ -318,9 +326,9 @@ class AgentService:
         self._register_web_search_tool(agent)
         return agent
 
-    def _build_chat_agent(self, model_name: str) -> Agent:
+    def _build_chat_agent(self, model_slug: str) -> Agent:
         agent = Agent(
-            model=model_name,
+            model=self._openrouter_model(model_slug),
             output_type=ConversationChatResponse,
             system_prompt=self._chat_system_prompt,
             retries=3,
@@ -328,9 +336,9 @@ class AgentService:
         self._register_web_search_tool(agent)
         return agent
 
-    def _build_intent_agent(self, model_name: str) -> Agent:
+    def _build_intent_agent(self, model_slug: str) -> Agent:
         return Agent(
-            model=model_name,
+            model=self._openrouter_model(model_slug),
             output_type=ConversationTurnIntent,
             system_prompt=_INTENT_CLASSIFIER_PROMPT,
             retries=2,
@@ -345,12 +353,12 @@ class AgentService:
         op_name: str,
     ) -> Any:
         """Run primary model with retries, then fallbacks on retryable failures."""
-        models = self.config.gemini.model_try_chain()
+        models = self.config.openrouter.model_try_chain()
         for idx, model in enumerate(models):
             agent = primary_agent if idx == 0 else build_for_model(model)
             if idx > 0:
                 self.logger.warning(
-                    'Retrying %s with fallback Gemini model %s (%d/%d)',
+                    'Retrying %s with fallback OpenRouter model %s (%d/%d)',
                     op_name,
                     model,
                     idx + 1,
@@ -367,7 +375,7 @@ class AgentService:
                 except TimeoutError:
                     if not is_last_model:
                         self.logger.warning(
-                            'Gemini model %s timed out after %ss for %s; trying next model in chain',
+                            'OpenRouter model %s timed out after %ss for %s; trying next model in chain',
                             model,
                             self._model_run_timeout_seconds,
                             op_name,
@@ -377,7 +385,7 @@ class AgentService:
                         raise
                     delay_seconds = self._compute_retry_delay(attempt=attempt)
                     self.logger.warning(
-                        'Gemini model %s timed out for %s (attempt %d/%d); retrying in %.1fs',
+                        'OpenRouter model %s timed out for %s (attempt %d/%d); retrying in %.1fs',
                         model,
                         op_name,
                         attempt,
@@ -386,14 +394,14 @@ class AgentService:
                     )
                     await asyncio.sleep(delay_seconds)
                 except ModelHTTPError as e:
-                    if e.status_code not in self._GEMINI_FALLBACK_HTTP_STATUSES:
+                    if e.status_code not in self._PROVIDER_RETRYABLE_HTTP_STATUSES:
                         raise
                     retry_delay = self._extract_retry_delay(e.body)
                     if is_last_model and is_last_attempt:
                         raise
                     if is_last_attempt:
                         self.logger.warning(
-                            'Gemini model %s returned HTTP %s for %s; trying next model in chain',
+                            'OpenRouter model %s returned HTTP %s for %s; trying next model in chain',
                             model,
                             e.status_code,
                             op_name,
@@ -404,7 +412,7 @@ class AgentService:
                         retry_after=retry_delay,
                     )
                     self.logger.warning(
-                        'Gemini model %s returned HTTP %s for %s (attempt %d/%d); retrying in %.1fs',
+                        'OpenRouter model %s returned HTTP %s for %s (attempt %d/%d); retrying in %.1fs',
                         model,
                         e.status_code,
                         op_name,
@@ -416,7 +424,7 @@ class AgentService:
         raise RuntimeError('unreachable model fallback loop')  # pragma: no cover
 
     def _compute_retry_delay(self, *, attempt: int, retry_after: float | None = None) -> float:
-        """Compute bounded exponential backoff with jitter for Gemini retries."""
+        """Compute bounded exponential backoff with jitter for provider retries."""
         if retry_after is not None and retry_after > 0:
             return min(retry_after, self._MAX_RETRY_DELAY_SECONDS)
 
@@ -565,11 +573,11 @@ class AgentService:
         conversation_context: str | None,
         has_artwork: bool,
     ) -> str:
-        """Construct the user-turn prompt sent to Gemini.
+        """Construct the user-turn prompt sent to the LLM.
 
         When the user has provided a comment, the comment is surfaced at the
-        top of the prompt so that Gemini addresses it explicitly before moving
-        on to the standard technical checklist.  When no comment is present the
+        top of the prompt so the model addresses it explicitly before moving
+        on to the standard technical checklist. When no comment is present the
         base prompt is used unchanged.
 
         Args:
@@ -748,7 +756,7 @@ class AgentService:
         has_artwork: bool = True,
     ) -> AnalysisResponse:
         """
-        Analyze an artwork request using Gemini (multimodal: image and/or text).
+        Analyze an artwork request using the configured OpenRouter model (multimodal: image and/or text).
 
         This method supports:
 
@@ -771,14 +779,14 @@ class AgentService:
             AnalysisResponse: Structured analysis with pedagogical critique fields.
 
         Raises:
-            ValueError: If there's an error calling Gemini or validating the response.
+            ValueError: If there's an error calling the model or validating the response.
         """
         try:
             active_cooldown = self._active_cooldown()
             if active_cooldown is not None:
                 remaining, error_code, message = active_cooldown
                 self.logger.warning(
-                    'Skipping Gemini call due to active cooldown (code=%s, remaining=%.1fs)',
+                    'Skipping LLM call due to active cooldown (code=%s, remaining=%.1fs)',
                     error_code,
                     remaining,
                 )
@@ -804,18 +812,18 @@ class AgentService:
 
             if user_input and user_input.strip():
                 self.logger.info(
-                    'Starting artwork analysis with Gemini %s (with user comment)',
-                    self.config.gemini.model_name,
+                    'Starting artwork analysis with OpenRouter model %s (with user comment)',
+                    self.config.openrouter.model_name,
                 )
             else:
                 self.logger.info(
-                    'Starting artwork analysis with Gemini %s (standard analysis)',
-                    self.config.gemini.model_name,
+                    'Starting artwork analysis with OpenRouter model %s (standard analysis)',
+                    self.config.openrouter.model_name,
                 )
 
-            # Call agent (Pydantic AI handles image multimodal with Gemini)
+            # Call agent (Pydantic AI multimodal + tools)
             self.logger.info(
-                'Submitting request to Gemini (timeout=%ss, web_search_enabled=%s)',
+                'Submitting request to OpenRouter (timeout=%ss, web_search_enabled=%s)',
                 self._model_run_timeout_seconds,
                 self.config.web_search_enabled,
             )
@@ -840,7 +848,7 @@ class AgentService:
             self.logger.info('Analysis completed. Score: %s/10', analysis_data.score)
             return analysis_data  # noqa: TRY300
         except ModelHTTPError as e:
-            self.logger.error('Gemini API error: %s (status=%s)', e.message, e.status_code)
+            self.logger.error('OpenRouter API error: %s (status=%s)', e.message, e.status_code)
             if e.status_code == 429:
                 retry_after = self._extract_retry_delay(e.body)
                 message = 'AI service quota exceeded. Please wait a moment before trying again.'
@@ -879,7 +887,7 @@ class AgentService:
             ) from e
         except TimeoutError as e:
             self.logger.error(
-                'Gemini request timed out after %ss',
+                'LLM request timed out after %ss',
                 self._model_run_timeout_seconds,
             )
             raise AIServiceError(
@@ -890,7 +898,7 @@ class AgentService:
             raise
         except Exception as e:
             self.logger.exception('Error analyzing image')
-            msg = f'Gemini image analysis error: {e!s}'
+            msg = f'Image analysis error: {e!s}'
             raise ValueError(msg) from e
 
     async def answer_conversation(
@@ -908,8 +916,8 @@ class AgentService:
                 conversation_context,
             )
             self.logger.info(
-                'Starting conversation chat with Gemini %s',
-                self.config.gemini.model_name,
+                'Starting conversation chat with OpenRouter model %s',
+                self.config.openrouter.model_name,
             )
             result = await self._run_agent_with_model_fallback(
                 message=prompt,
@@ -964,7 +972,7 @@ class AgentService:
                 chat_data = chat_data.model_copy(update={'analysis': None})
             return chat_data  # noqa: TRY300
         except ModelHTTPError as e:
-            self.logger.error('Gemini API error: %s (status=%s)', e.message, e.status_code)
+            self.logger.error('OpenRouter API error: %s (status=%s)', e.message, e.status_code)
             if e.status_code == 429:
                 retry_after = self._extract_retry_delay(e.body)
                 raise AIServiceError(
@@ -989,7 +997,7 @@ class AgentService:
             ) from e
         except TimeoutError as e:
             self.logger.error(
-                'Gemini request timed out after %ss',
+                'LLM request timed out after %ss',
                 self._model_run_timeout_seconds,
             )
             raise AIServiceError(
@@ -998,7 +1006,7 @@ class AgentService:
             ) from e
         except Exception as e:
             self.logger.exception('Error in conversation chat')
-            msg = f'Gemini conversation error: {e!s}'
+            msg = f'Conversation chat error: {e!s}'
             raise ValueError(msg) from e
 
     async def classify_conversation_turn(
@@ -1012,8 +1020,8 @@ class AgentService:
         prompt = self._build_intent_user_turn(user_input, conversation_context)
         try:
             self.logger.info(
-                'Classifying conversation turn with Gemini %s',
-                self.config.gemini.model_name,
+                'Classifying conversation turn with OpenRouter model %s',
+                self.config.openrouter.model_name,
             )
             result = await self._run_agent_with_model_fallback(
                 message=prompt,

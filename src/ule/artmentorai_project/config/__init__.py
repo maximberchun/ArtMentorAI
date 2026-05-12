@@ -13,7 +13,7 @@ request handling, and other layers of the API.
 """
 
 from .app_config import AppConfig
-from .gemini_config import GeminiConfig
+from .openrouter_config import OpenRouterConfig
 from .server_config import ServerConfig
 from .ssl_config import SSLConfig
 from .supabase_config import SupabaseConfig
@@ -21,7 +21,7 @@ from .upload_config import UploadConfig
 
 __all__ = [
     'AppConfig',
-    'GeminiConfig',
+    'OpenRouterConfig',
     'SSLConfig',
     'ServerConfig',
     'SupabaseConfig',

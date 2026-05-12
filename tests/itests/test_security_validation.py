@@ -26,7 +26,7 @@ from ule.artmentorai_project.models import AuthUser
 
 
 def _security_app_config(monkeypatch: pytest.MonkeyPatch, **rate_env: str) -> AppConfig:
-    monkeypatch.setenv('GEMINI__API_KEY', 'test-gemini-api-key')
+    monkeypatch.setenv('OPENROUTER__API_KEY', 'test-openrouter-api-key')
     monkeypatch.setenv('SUPABASE__URL', 'https://example.supabase.co')
     monkeypatch.setenv('SUPABASE__ANON_KEY', 'test-anon-key')
     for key, value in rate_env.items():

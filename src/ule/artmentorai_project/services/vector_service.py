@@ -151,7 +151,7 @@ class ArtCritique:
         """Create ArtCritique from AnalysisResponse.
 
         Args:
-            response: AnalysisResponse from Gemini
+            response: AnalysisResponse from the critique LLM
             tags: Optional tags for the critique
             goals_snapshot: Optional user goals snapshot
 

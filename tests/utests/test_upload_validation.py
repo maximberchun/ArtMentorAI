@@ -21,7 +21,7 @@ from ule.artmentorai_project.utils.upload_validation import (
 
 @pytest.fixture
 def upload_app_config(monkeypatch: pytest.MonkeyPatch) -> AppConfig:
-    monkeypatch.setenv('GEMINI__API_KEY', 'test-gemini-api-key')
+    monkeypatch.setenv('OPENROUTER__API_KEY', 'test-openrouter-api-key')
     monkeypatch.setenv('SUPABASE__URL', 'https://example.supabase.co')
     cfg = AppConfig()
     cfg.set_logger(logging.getLogger('tests.upload_validation'))

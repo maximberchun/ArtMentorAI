@@ -72,7 +72,7 @@ def mock_vector_service() -> MagicMock:
 @pytest.fixture
 def app_config(monkeypatch: pytest.MonkeyPatch) -> AppConfig:
     """Build AppConfig with test-safe environment variables."""
-    monkeypatch.setenv('GEMINI__API_KEY', 'test-gemini-api-key')
+    monkeypatch.setenv('OPENROUTER__API_KEY', 'test-openrouter-api-key')
     monkeypatch.setenv('SUPABASE__URL', 'https://example.supabase.co')
     monkeypatch.setenv('SUPABASE__ANON_KEY', 'test-anon-key')
 
