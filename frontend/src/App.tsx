@@ -30,10 +30,10 @@ export default function App() {
   return (
     <Routes>
       <Route path="/sign-in" element={withShell(<SignInPage session={session} />)} />
-      <Route path="/" element={withAuth(<HomePage />)} />
+      <Route path="/" element={withShell(<HomePage />)} />
+      <Route path="/critique" element={withShell(<CritiquePage session={session} />)} />
+      <Route path="/conversation" element={withShell(<ConversationPage session={session} />)} />
       <Route path="/profile" element={withAuth(<ProfilePage />)} />
-      <Route path="/critique" element={withAuth(<CritiquePage />)} />
-      <Route path="/conversation" element={withAuth(<ConversationPage />)} />
       <Route path="/portfolio" element={withAuth(<PortfolioPage />)} />
       <Route path="/history" element={withAuth(<HistoryPage />)} />
       <Route path="/progress" element={withAuth(<ProgressPage />)} />

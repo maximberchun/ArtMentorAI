@@ -1,6 +1,12 @@
 import { FormEvent, useState, useRef, useEffect } from 'react'
+import { Session } from '@supabase/supabase-js'
+import { GuestBanner } from '../components/GuestBanner'
 import { apiFetch, apiJson } from '../lib/api'
 import { AnalysisResponse, ConversationChatResponse, ConversationInfo } from '../types/api'
+
+type ConversationPageProps = {
+  session: Session | null
+}
 
 interface ChatMessage {
   id: string
@@ -13,7 +19,8 @@ interface ChatMessage {
   assistantKind?: 'critique' | 'chat'
 }
 
-export function ConversationPage() {
+export function ConversationPage({ session }: ConversationPageProps) {
+  const isGuest = !session
   const [userInput, setUserInput] = useState('')
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState<string | null>(null)
@@ -59,9 +66,10 @@ export function ConversationPage() {
     }
   }
 
-  async function ensureConversation(): Promise<string> {
+  async function ensureConversation(): Promise<string | null> {
+    if (isGuest) return null
     if (conversation?.id) return conversation.id
-    
+
     try {
       const created = await apiJson<ConversationInfo>('/analysis/conversations', {
         method: 'POST',
@@ -108,12 +116,14 @@ export function ConversationPage() {
       const useCritique = currentFile !== null
 
       if (!useCritique && currentInput.trim()) {
+        const chatBody: { message: string; conversation_id?: string } = {
+          message: currentInput.trim(),
+        }
+        if (conversationId) chatBody.conversation_id = conversationId
+
         const chatPayload = await apiJson<ConversationChatResponse>('/analysis/chat', {
           method: 'POST',
-          body: JSON.stringify({
-            message: currentInput.trim(),
-            conversation_id: conversationId,
-          }),
+          body: JSON.stringify(chatBody),
         })
         const assistantMessage: ChatMessage =
           chatPayload.analysis != null
@@ -137,7 +147,7 @@ export function ConversationPage() {
         const formData = new FormData()
         if (currentFile) formData.append('file', currentFile)
         if (currentInput.trim()) formData.append('user_input', currentInput)
-        formData.append('conversation_id', conversationId)
+        if (conversationId) formData.append('conversation_id', conversationId)
 
         const response = await apiFetch('/analysis/critique', {
           method: 'POST',
@@ -220,12 +230,17 @@ export function ConversationPage() {
 
   return (
     <div className="flex h-[calc(100vh-8rem)] flex-col">
+      {isGuest && <GuestBanner />}
       {/* Header */}
       <div className="flex items-center justify-between border-b border-border pb-4">
         <div>
           <h1 className="text-xl font-bold text-foreground">Art Conversation</h1>
           <p className="text-sm text-muted-foreground">
-            {conversation ? `Session: ${conversation.id.slice(0, 8)}...` : 'Start a new conversation'}
+            {isGuest
+              ? 'Guest session (not saved)'
+              : conversation
+                ? `Session: ${conversation.id.slice(0, 8)}...`
+                : 'Start a new conversation'}
           </p>
         </div>
         {chatMessages.length > 0 && (

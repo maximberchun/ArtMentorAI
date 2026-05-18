@@ -1,8 +1,15 @@
 import { FormEvent, useState, useRef } from 'react'
+import { Session } from '@supabase/supabase-js'
+import { GuestBanner } from '../components/GuestBanner'
 import { apiFetch } from '../lib/api'
 import { AnalysisResponse } from '../types/api'
 
-export function CritiquePage() {
+type CritiquePageProps = {
+  session: Session | null
+}
+
+export function CritiquePage({ session }: CritiquePageProps) {
+  const isGuest = !session
   const [userInput, setUserInput] = useState('')
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState<string | null>(null)
@@ -72,6 +79,7 @@ export function CritiquePage() {
 
   return (
     <div className="space-y-8">
+      {isGuest && <GuestBanner />}
       {/* Header */}
       <div className="text-center">
         <h1 className="text-2xl font-bold text-foreground sm:text-3xl">Get Your Art Critiqued</h1>

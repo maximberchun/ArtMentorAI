@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from ..models import AuthUser
 
 _bearer = HTTPBearer(auto_error=True)
+_bearer_optional = HTTPBearer(auto_error=False)
 
 
 def build_current_user_dependency(config: AppConfig) -> Callable[..., Awaitable[AuthUser]]:
@@ -28,3 +29,22 @@ def build_current_user_dependency(config: AppConfig) -> Callable[..., Awaitable[
         return await auth.verify_access_token(creds.credentials)
 
     return current_user
+
+
+def build_optional_current_user_dependency(
+    config: AppConfig,
+) -> Callable[..., Awaitable[AuthUser | None]]:
+    """Return a Depends() callable; missing/invalid bearer yields ``None`` (guest)."""
+    auth = AuthService(config)
+
+    async def optional_current_user(
+        creds: Annotated[
+            HTTPAuthorizationCredentials | None,
+            Depends(_bearer_optional),
+        ],
+    ) -> AuthUser | None:
+        if creds is None:
+            return None
+        return await auth.verify_access_token(creds.credentials)
+
+    return optional_current_user

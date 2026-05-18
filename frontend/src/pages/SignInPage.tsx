@@ -1,14 +1,23 @@
 import { FormEvent, useEffect, useRef, useState } from 'react'
 import { Session } from '@supabase/supabase-js'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 
 type SignInPageProps = {
   session: Session | null
 }
 
+function safeReturnPath(next: string | null): string {
+  if (!next || !next.startsWith('/') || next.startsWith('//')) {
+    return '/'
+  }
+  return next
+}
+
 export function SignInPage({ session }: SignInPageProps) {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const returnTo = safeReturnPath(searchParams.get('next'))
   const formRef = useRef<HTMLFormElement>(null)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -17,9 +26,9 @@ export function SignInPage({ session }: SignInPageProps) {
 
   useEffect(() => {
     if (session) {
-      void navigate('/', { replace: true })
+      void navigate(returnTo, { replace: true })
     }
-  }, [navigate, session])
+  }, [navigate, returnTo, session])
 
   async function signInEmail(e: FormEvent) {
     e.preventDefault()

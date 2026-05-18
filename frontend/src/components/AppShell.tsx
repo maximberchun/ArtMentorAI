@@ -48,6 +48,32 @@ function MobileNavLink({ to, children, onClick }: { to: string; children: ReactN
   )
 }
 
+function LockedNavLink({ to, label }: { to: string; label: string }) {
+  const signInTo = `/sign-in?next=${encodeURIComponent(to)}`
+  return (
+    <Link
+      to={signInTo}
+      className="relative px-3 py-2 text-sm font-medium text-muted-foreground/70 transition-colors hover:text-muted-foreground"
+      title="Sign in required"
+    >
+      {label}
+    </Link>
+  )
+}
+
+function LockedMobileNavLink({ to, label, onClick }: { to: string; label: string; onClick?: () => void }) {
+  const signInTo = `/sign-in?next=${encodeURIComponent(to)}`
+  return (
+    <Link
+      to={signInTo}
+      onClick={onClick}
+      className="block px-4 py-3 text-sm font-medium text-muted-foreground/70 hover:bg-secondary hover:text-muted-foreground"
+    >
+      {label} <span className="text-xs">(sign in)</span>
+    </Link>
+  )
+}
+
 export function AppShell({ session, onSignOut, children }: AppShellProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
 
@@ -79,10 +105,21 @@ export function AppShell({ session, onSignOut, children }: AppShellProps) {
               <NavLink to="/">Home</NavLink>
               <NavLink to="/critique">Critique</NavLink>
               <NavLink to="/conversation">Chat</NavLink>
-              <NavLink to="/portfolio">Portfolio</NavLink>
-              <NavLink to="/history">History</NavLink>
-              <NavLink to="/progress">Progress</NavLink>
-              <NavLink to="/profile">Profile</NavLink>
+              {session ? (
+                <>
+                  <NavLink to="/portfolio">Portfolio</NavLink>
+                  <NavLink to="/history">History</NavLink>
+                  <NavLink to="/progress">Progress</NavLink>
+                  <NavLink to="/profile">Profile</NavLink>
+                </>
+              ) : (
+                <>
+                  <LockedNavLink to="/portfolio" label="Portfolio" />
+                  <LockedNavLink to="/history" label="History" />
+                  <LockedNavLink to="/progress" label="Progress" />
+                  <LockedNavLink to="/profile" label="Profile" />
+                </>
+              )}
             </nav>
           </div>
 
@@ -132,10 +169,21 @@ export function AppShell({ session, onSignOut, children }: AppShellProps) {
               <MobileNavLink to="/" onClick={() => setMobileMenuOpen(false)}>Home</MobileNavLink>
               <MobileNavLink to="/critique" onClick={() => setMobileMenuOpen(false)}>Critique</MobileNavLink>
               <MobileNavLink to="/conversation" onClick={() => setMobileMenuOpen(false)}>Chat</MobileNavLink>
-              <MobileNavLink to="/portfolio" onClick={() => setMobileMenuOpen(false)}>Portfolio</MobileNavLink>
-              <MobileNavLink to="/history" onClick={() => setMobileMenuOpen(false)}>History</MobileNavLink>
-              <MobileNavLink to="/progress" onClick={() => setMobileMenuOpen(false)}>Progress</MobileNavLink>
-              <MobileNavLink to="/profile" onClick={() => setMobileMenuOpen(false)}>Profile</MobileNavLink>
+              {session ? (
+                <>
+                  <MobileNavLink to="/portfolio" onClick={() => setMobileMenuOpen(false)}>Portfolio</MobileNavLink>
+                  <MobileNavLink to="/history" onClick={() => setMobileMenuOpen(false)}>History</MobileNavLink>
+                  <MobileNavLink to="/progress" onClick={() => setMobileMenuOpen(false)}>Progress</MobileNavLink>
+                  <MobileNavLink to="/profile" onClick={() => setMobileMenuOpen(false)}>Profile</MobileNavLink>
+                </>
+              ) : (
+                <>
+                  <LockedMobileNavLink to="/portfolio" label="Portfolio" onClick={() => setMobileMenuOpen(false)} />
+                  <LockedMobileNavLink to="/history" label="History" onClick={() => setMobileMenuOpen(false)} />
+                  <LockedMobileNavLink to="/progress" label="Progress" onClick={() => setMobileMenuOpen(false)} />
+                  <LockedMobileNavLink to="/profile" label="Profile" onClick={() => setMobileMenuOpen(false)} />
+                </>
+              )}
             </nav>
             <div className="border-t border-border p-4">
               {session ? (

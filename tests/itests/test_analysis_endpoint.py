@@ -173,6 +173,37 @@ def test_critique_rejects_invalid_token_with_401(app_config, monkeypatch) -> Non
     assert response.json()['detail'] == 'Invalid authorization token'
 
 
+def test_critique_guest_without_token_succeeds(app_config, monkeypatch) -> None:
+    """Guest requests without a bearer token should still return analysis."""
+    client = _build_analysis_client(app_config, monkeypatch)
+
+    response = client.post(
+        '/analysis/critique',
+        data={'user_input': 'Please critique my composition and anatomy.'},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['score'] is None
+    assert len(payload['prioritized_issues']) >= 1
+
+
+def test_critique_guest_rejects_conversation_id(app_config, monkeypatch) -> None:
+    """Guests cannot attach a saved conversation id."""
+    client = _build_analysis_client(app_config, monkeypatch)
+
+    response = client.post(
+        '/analysis/critique',
+        data={
+            'user_input': 'Please critique my work.',
+            'conversation_id': 'conv-123',
+        },
+    )
+
+    assert response.status_code == 401
+    assert 'conversation' in response.json()['detail'].lower()
+
+
 def test_chat_returns_reply_for_general_question(app_config, monkeypatch) -> None:
     """General Q&A should return a conversational reply without critique RAG."""
     client = _build_analysis_client(app_config, monkeypatch)
@@ -181,6 +212,21 @@ def test_chat_returns_reply_for_general_question(app_config, monkeypatch) -> Non
         '/analysis/chat',
         json={'message': 'What book do you recommend for learning drawing?'},
         headers={'Authorization': 'Bearer valid-token'},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert 'reply' in payload
+    assert 'Betty Edwards' in payload['reply']
+
+
+def test_chat_guest_without_token_succeeds(app_config, monkeypatch) -> None:
+    """Guest chat should answer without persisting messages."""
+    client = _build_analysis_client(app_config, monkeypatch)
+
+    response = client.post(
+        '/analysis/chat',
+        json={'message': 'What book do you recommend for learning drawing?'},
     )
 
     assert response.status_code == 200

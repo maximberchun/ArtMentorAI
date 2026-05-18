@@ -16,6 +16,9 @@ If a breaking change is required, it will ship under a versioned path (example: 
 - **Base URL**: whatever the server is hosted on (example: `http://localhost:8000`)
 - **Auth**:
   - Protected endpoints require `Authorization: Bearer <supabase_access_token>`
+  - `POST /analysis/critique` and `POST /analysis/chat` accept requests **with or without** a bearer token
+  - Without a token, responses are ephemeral (no Postgres, Storage, or Qdrant writes)
+  - Invalid or expired tokens still return **401**
   - Token verification uses Supabase JWT (JWKS; RS256 or ES256 per project signing key)
   - `user_id` is derived from token subject (`sub`) and is not trusted from client payloads
 - **Timestamps**: ISO-8601 strings (UTC)
@@ -122,13 +125,15 @@ List configured OAuth providers.
 
 ### POST `/analysis/critique`
 
-Generate a structured critique from an uploaded image and/or a text prompt. The authenticated user is derived from the bearer token and used for profile lookup + vector-memory scoping.
+Generate a structured critique from an uploaded image and/or a text prompt.
 
 **Content-Type**: `multipart/form-data`
 
 **Headers**
 
-- **`Authorization`** (required): `Bearer <supabase_access_token>`
+- **`Authorization`** (optional): `Bearer <supabase_access_token>`
+  - When present: profile lookup, vector-memory scoping, and persistence apply
+  - When absent: guest mode — analysis only, nothing saved
 
 **Form fields**
 
@@ -159,6 +164,28 @@ Generate a structured critique from an uploaded image and/or a text prompt. The 
 **Notes**
 
 - This endpoint returns the critique even if vector DB storage is unavailable (memory is “best effort”).
+- Guest requests must not include `conversation_id` (returns **401** if present).
+
+### POST `/analysis/chat`
+
+Conversation turn: general art Q&A or text-only structured critique (same pipeline as `/analysis/critique` without an image).
+
+**Headers**
+
+- **`Authorization`** (optional): `Bearer <supabase_access_token>`
+  - When present: profile context, conversation memory, and message persistence apply
+  - When absent: guest mode — reply only, nothing saved
+
+**Body (JSON)**
+
+- **`message`** (string, required)
+- **`conversation_id`** (string, optional; requires authentication)
+
+**Status codes**
+
+- **200**: success
+- **401**: invalid/expired token, or guest request with `conversation_id`
+- **422**: empty message
 
 ---
 

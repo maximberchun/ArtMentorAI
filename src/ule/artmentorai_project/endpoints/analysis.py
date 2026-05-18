@@ -37,7 +37,7 @@ from ..utils.upload_validation import (
     validate_image_content_type,
     validate_image_file,
 )
-from .deps import build_current_user_dependency
+from .deps import build_current_user_dependency, build_optional_current_user_dependency
 
 
 def get_agent_service(config: AppConfig) -> AgentService:
@@ -245,13 +245,24 @@ async def execute_critique_request(  # noqa: C901, PLR0912, PLR0913, PLR0915
     profile_service: ProfileService,
     vector_service: VectorService | None,
     storage_service: StorageService | None,
-    user: AuthUser,
+    user: AuthUser | None,
     file: UploadFile | None,
     user_input: str | None,
     conversation_id: str | None,
 ) -> AnalysisResponse:
     """Shared critique pipeline for /analysis/critique and AI-routed chat turns."""
     _require_at_least_one_input(file=file, user_input=user_input)
+
+    active_conversation_id = (
+        conversation_id.strip() if conversation_id and conversation_id.strip() else None
+    )
+    if user is None and active_conversation_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Sign in to use saved conversations.',
+        )
+
+    user_id_label = user.user_id if user is not None else 'guest'
 
     try:
         # File validation
@@ -276,7 +287,7 @@ async def execute_critique_request(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 file.filename or 'unknown',
                 mime_type,
             )
-            if storage_service is not None and image_bytes is not None:
+            if user is not None and storage_service is not None and image_bytes is not None:
                 try:
                     image_path = storage_service.upload_image(
                         user_id=user.user_id,
@@ -297,16 +308,13 @@ async def execute_critique_request(  # noqa: C901, PLR0912, PLR0913, PLR0915
             'Analyzing input — file: %s | user_input: %s | user_id: %s',
             file.filename if file else 'none',
             'yes' if user_input else 'none',
-            user.user_id,
+            user_id_label,
         )
 
         past_critiques_str: str | None = None
         portfolio_context_str: str | None = None
         conversation_context_str: str | None = None
-        active_conversation_id = (
-            conversation_id.strip() if conversation_id and conversation_id.strip() else None
-        )
-        if active_conversation_id:
+        if user is not None and active_conversation_id:
             try:
                 sb_for_conversation = create_sync_supabase_service_client(config)
                 conversation_repo = ConversationRepository(sb_for_conversation, config.logger)
@@ -340,7 +348,7 @@ async def execute_critique_request(  # noqa: C901, PLR0912, PLR0913, PLR0915
                     str(conversation_error),
                 )
 
-        if vector_service is not None:
+        if user is not None and vector_service is not None:
             try:
                 # Use the user's own comment as the semantic query when
                 # available; fall back to a generic drawing-error query so
@@ -399,7 +407,7 @@ async def execute_critique_request(  # noqa: C901, PLR0912, PLR0913, PLR0915
                     user.user_id,
                     str(memory_error),
                 )
-        else:
+        elif user is not None:
             config.logger.debug(
                 'VectorService not available; proceeding without memory for user_id=%s',
                 user.user_id,
@@ -407,21 +415,22 @@ async def execute_critique_request(  # noqa: C901, PLR0912, PLR0913, PLR0915
 
         # Load optional user profile for personalised critique
         profile_context_str: str | None = None
-        try:
-            profile = profile_service.get_profile(user.user_id)
-        except RuntimeError as e:
-            config.logger.warning(
-                'Failed to load profile for user_id=%s: %s. Proceeding without profile.',
-                user.user_id,
-                str(e),
-            )
-        else:
-            if profile is not None:
-                profile_context_str = _format_profile_for_prompt(profile)
-                config.logger.debug(
-                    'Injecting profile context into prompt for user_id=%s',
+        if user is not None:
+            try:
+                profile = profile_service.get_profile(user.user_id)
+            except RuntimeError as e:
+                config.logger.warning(
+                    'Failed to load profile for user_id=%s: %s. Proceeding without profile.',
                     user.user_id,
+                    str(e),
                 )
+            else:
+                if profile is not None:
+                    profile_context_str = _format_profile_for_prompt(profile)
+                    config.logger.debug(
+                        'Injecting profile context into prompt for user_id=%s',
+                        user.user_id,
+                    )
 
         # Analyze with the configured LLM agent (OpenRouter)
         result = await agent_service.analyze_image(
@@ -443,6 +452,9 @@ async def execute_critique_request(  # noqa: C901, PLR0912, PLR0913, PLR0915
             analysis_result.score = None
 
         synced_via_pg = False
+        if user is None:
+            return analysis_result
+
         try:
             sb = create_sync_supabase_service_client(config)
             image_asset_id = None
@@ -649,6 +661,7 @@ def create_analysis_router(config: AppConfig, limiter: Limiter) -> APIRouter:  #
     agent_service = AgentService(config)
     profile_service = ProfileService(config=config, logger=config.logger)
     current_user = build_current_user_dependency(config)
+    optional_current_user = build_optional_current_user_dependency(config)
     try:
         vector_service: VectorService | None = get_vector_service(config)
     except RuntimeError as init_error:
@@ -676,7 +689,7 @@ def create_analysis_router(config: AppConfig, limiter: Limiter) -> APIRouter:  #
     @limiter.limit(config.rate_limits.critique)
     async def critique_artwork(
         request: Request,
-        user: Annotated[AuthUser, Depends(current_user)],
+        user: Annotated[AuthUser | None, Depends(optional_current_user)],
         file: Annotated[
             UploadFile | None, File(description='The artwork image to analyse.')
         ] = None,
@@ -757,14 +770,14 @@ def create_analysis_router(config: AppConfig, limiter: Limiter) -> APIRouter:  #
     @limiter.limit(config.rate_limits.chat)
     async def conversation_chat(  # noqa: C901, PLR0912, PLR0915
         request: Request,
-        user: Annotated[AuthUser, Depends(current_user)],
+        user: Annotated[AuthUser | None, Depends(optional_current_user)],
         body: ConversationChatRequest,
     ) -> ConversationChatResponse:
         """Classify the turn, then answer as Q&A or run structured text-only critique.
 
         Args:
             request: HTTP request (required by the rate limiter integration).
-            user: Authenticated user identity.
+            user: Authenticated user identity, or ``None`` for guest (no persistence).
             body: User message and optional conversation id.
         """
         _ = request
@@ -782,7 +795,12 @@ def create_analysis_router(config: AppConfig, limiter: Limiter) -> APIRouter:  #
             if body.conversation_id and body.conversation_id.strip()
             else None
         )
-        if active_conversation_id:
+        if user is None and active_conversation_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail='Sign in to use saved conversations.',
+            )
+        if user is not None and active_conversation_id:
             conversation_context_str, conversation_ready = _prepare_conversation_for_general_chat(
                 config=config,
                 conversation_id=active_conversation_id,
@@ -844,17 +862,18 @@ def create_analysis_router(config: AppConfig, limiter: Limiter) -> APIRouter:  #
             return ConversationChatResponse(reply=summary, analysis=analysis_model)
 
         profile_context_str: str | None = None
-        try:
-            profile = profile_service.get_profile(user.user_id)
-        except RuntimeError as e:
-            config.logger.warning(
-                'Failed to load profile for user_id=%s: %s. Proceeding without profile.',
-                user.user_id,
-                str(e),
-            )
-        else:
-            if profile is not None:
-                profile_context_str = _format_profile_for_prompt(profile)
+        if user is not None:
+            try:
+                profile = profile_service.get_profile(user.user_id)
+            except RuntimeError as e:
+                config.logger.warning(
+                    'Failed to load profile for user_id=%s: %s. Proceeding without profile.',
+                    user.user_id,
+                    str(e),
+                )
+            else:
+                if profile is not None:
+                    profile_context_str = _format_profile_for_prompt(profile)
 
         try:
             result = await agent_service.answer_conversation(
@@ -879,7 +898,7 @@ def create_analysis_router(config: AppConfig, limiter: Limiter) -> APIRouter:  #
                 detail=SAFE_INTERNAL_ERROR_DETAIL,
             ) from None
 
-        if conversation_ready and active_conversation_id:
+        if user is not None and conversation_ready and active_conversation_id:
             try:
                 sb = create_sync_supabase_service_client(config)
                 msg_repo = ConversationMessageRepository(sb, config.logger)
