@@ -16,6 +16,19 @@ class ServerConfig(BaseSettings):
     reload: bool = Field(
         default=False, description='Auto-reload on code changes (development only)'
     )
+    limit_concurrency: int | None = Field(
+        default=16,
+        ge=1,
+        description=(
+            'Maximum in-flight requests handled by Uvicorn; '
+            'overflow requests are rejected with 503 to preserve responsiveness'
+        ),
+    )
+    timeout_keep_alive: int = Field(
+        default=5,
+        ge=1,
+        description='Seconds to keep idle HTTP keep-alive connections open',
+    )
 
     def setup(self, logger: logging.Logger) -> None:
         """
@@ -27,3 +40,8 @@ class ServerConfig(BaseSettings):
         logger.info('Server configured: %s:%s', self.host, self.port)
         if self.reload:
             logger.warning('Auto-reload enabled (development mode)')
+        logger.info(
+            'Server runtime limits: limit_concurrency=%s, timeout_keep_alive=%s',
+            self.limit_concurrency,
+            self.timeout_keep_alive,
+        )

@@ -149,6 +149,25 @@ def create_app(config: AppConfig) -> FastAPI:
     config.logger.debug('Security headers and rate limit middleware enabled')
 
     # ============== Root Endpoints ==============
+    health_payload = {
+        'status': 'healthy',
+        'app': config.app_name,
+        'version': config.app_version,
+        'environment': config.environment,
+    }
+
+    @app.middleware('http')
+    async def fast_healthcheck_path(request: Request, call_next):  # type: ignore[no-untyped-def]
+        """
+        Serve `/health` directly.
+
+        This keeps Fly health checks responsive even when heavier request
+        handlers are under pressure.
+        """
+        if request.method == 'GET' and request.url.path == '/health':
+            return JSONResponse(health_payload)
+        return await call_next(request)
+
     @app.get('/', tags=['General'])
     async def root() -> dict:
         """Root endpoint with API information."""
@@ -175,13 +194,8 @@ def create_app(config: AppConfig) -> FastAPI:
 
     @app.get('/health', tags=['General'])
     async def health() -> dict:
-        """Global health check for the application."""
-        return {
-            'status': 'healthy',
-            'app': config.app_name,
-            'version': config.app_version,
-            'environment': config.environment,
-        }
+        """Global health check for the application (for docs/OpenAPI visibility)."""
+        return health_payload
 
     config.logger.info('Application endpoints registered successfully')
 
@@ -290,6 +304,8 @@ def _run_server(logger: logging.Logger, dev: bool = False) -> None:
         ssl_certfile=str(config.ssl.cert) if config.ssl.cert else None,
         ssl_ca_certs=str(config.ssl.ca) if config.ssl.ca else None,
         reload=config.server.reload,
+        limit_concurrency=config.server.limit_concurrency,
+        timeout_keep_alive=config.server.timeout_keep_alive,
         log_level='debug' if config.debug else 'info',
     )
 
