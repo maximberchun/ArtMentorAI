@@ -165,7 +165,15 @@ def create_app(config: AppConfig) -> FastAPI:
         handlers are under pressure.
         """
         if request.method == 'GET' and request.url.path == '/health':
-            return JSONResponse(health_payload)
+            response = JSONResponse(health_payload)
+            response.headers['X-Content-Type-Options'] = 'nosniff'
+            response.headers['X-Frame-Options'] = 'DENY'
+            response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+            response.headers['Permissions-Policy'] = 'camera=(), microphone=(), geolocation=()'
+            response.headers['Content-Security-Policy'] = SecurityHeadersMiddleware._csp_for_path(
+                request.url.path
+            )
+            return response
         return await call_next(request)
 
     @app.get('/', tags=['General'])
