@@ -7,6 +7,7 @@ This module provides REST endpoints for:
 - Error handling that doesn't break the API if vector DB is down
 """
 
+import asyncio
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, UploadFile, status
@@ -289,7 +290,8 @@ async def execute_critique_request(  # noqa: C901, PLR0912, PLR0913, PLR0915
             )
             if user is not None and storage_service is not None and image_bytes is not None:
                 try:
-                    image_path = storage_service.upload_image(
+                    image_path = await asyncio.to_thread(
+                        storage_service.upload_image,
                         user_id=user.user_id,
                         image_bytes=image_bytes,
                         filename=file.filename or 'unknown',
@@ -316,13 +318,17 @@ async def execute_critique_request(  # noqa: C901, PLR0912, PLR0913, PLR0915
         conversation_context_str: str | None = None
         if user is not None and active_conversation_id:
             try:
-                sb_for_conversation = create_sync_supabase_service_client(config)
+                sb_for_conversation = await asyncio.to_thread(
+                    create_sync_supabase_service_client,
+                    config,
+                )
                 conversation_repo = ConversationRepository(sb_for_conversation, config.logger)
                 conversation_message_repo = ConversationMessageRepository(
                     sb_for_conversation,
                     config.logger,
                 )
-                conversation = conversation_repo.get_active_for_user(
+                conversation = await asyncio.to_thread(
+                    conversation_repo.get_active_for_user,
                     active_conversation_id,
                     user.user_id,
                 )
@@ -331,7 +337,8 @@ async def execute_critique_request(  # noqa: C901, PLR0912, PLR0913, PLR0915
                         status_code=status.HTTP_404_NOT_FOUND,
                         detail='Conversation not found.',
                     )
-                recent_messages = conversation_message_repo.list_recent_for_conversation(
+                recent_messages = await asyncio.to_thread(
+                    conversation_message_repo.list_recent_for_conversation,
                     conversation_id=active_conversation_id,
                     user_id=user.user_id,
                     limit=8,
@@ -358,7 +365,8 @@ async def execute_critique_request(  # noqa: C901, PLR0912, PLR0913, PLR0915
                     if user_input and user_input.strip()
                     else 'technical drawing errors anatomy perspective'
                 )
-                past_records = vector_service.search_similar_critiques(
+                past_records = await asyncio.to_thread(
+                    vector_service.search_similar_critiques,
                     query_text=memory_query,
                     user_id=user.user_id,
                 )
@@ -382,7 +390,8 @@ async def execute_critique_request(  # noqa: C901, PLR0912, PLR0913, PLR0915
                         user.user_id,
                     )
 
-                portfolio_neighbors = vector_service.search_similar_portfolio_items(
+                portfolio_neighbors = await asyncio.to_thread(
+                    vector_service.search_similar_portfolio_items,
                     query_text=memory_query,
                     user_id=user.user_id,
                 )
@@ -417,7 +426,7 @@ async def execute_critique_request(  # noqa: C901, PLR0912, PLR0913, PLR0915
         profile_context_str: str | None = None
         if user is not None:
             try:
-                profile = profile_service.get_profile(user.user_id)
+                profile = await asyncio.to_thread(profile_service.get_profile, user.user_id)
             except RuntimeError as e:
                 config.logger.warning(
                     'Failed to load profile for user_id=%s: %s. Proceeding without profile.',
@@ -456,11 +465,12 @@ async def execute_critique_request(  # noqa: C901, PLR0912, PLR0913, PLR0915
             return analysis_result
 
         try:
-            sb = create_sync_supabase_service_client(config)
+            sb = await asyncio.to_thread(create_sync_supabase_service_client, config)
             image_asset_id = None
             if image_path is not None:
                 img_repo = ImageAssetRepository(sb, config.logger)
-                asset = img_repo.create(
+                asset = await asyncio.to_thread(
+                    img_repo.create,
                     user_id=user.user_id,
                     storage_bucket=config.supabase.storage_bucket,
                     storage_object_path=image_path,
@@ -471,7 +481,8 @@ async def execute_critique_request(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 image_asset_id = asset.id
             cr_repo = CritiqueRepository(sb, config.logger)
             artwork_filename = (file.filename if file is not None else None) or 'unknown'
-            row = cr_repo.create(
+            row = await asyncio.to_thread(
+                cr_repo.create,
                 user_id=user.user_id,
                 summary=_build_persistence_summary(analysis_result),
                 score=analysis_result.score,
@@ -508,14 +519,16 @@ async def execute_critique_request(  # noqa: C901, PLR0912, PLR0913, PLR0915
                     if user_input and user_input.strip()
                     else 'Please critique the uploaded artwork.'
                 )
-                msg_repo.create(
+                await asyncio.to_thread(
+                    msg_repo.create,
                     conversation_id=active_conversation_id,
                     user_id=user.user_id,
                     role='user',
                     content=user_message,
                     critique_id=row.id,
                 )
-                msg_repo.create(
+                await asyncio.to_thread(
+                    msg_repo.create,
                     conversation_id=active_conversation_id,
                     user_id=user.user_id,
                     role='assistant',
@@ -531,7 +544,8 @@ async def execute_critique_request(  # noqa: C901, PLR0912, PLR0913, PLR0915
                         'targeted_drill_count': len(analysis_result.targeted_drills),
                         'confidence_percent': round(analysis_result.confidence * 100),
                     }
-                    ProgressSnapshotRepository(sb, config.logger).create(
+                    await asyncio.to_thread(
+                        ProgressSnapshotRepository(sb, config.logger).create,
                         user_id=user.user_id,
                         critique_id=row.id,
                         rubric_key='critique_quality',
@@ -543,7 +557,8 @@ async def execute_critique_request(  # noqa: C901, PLR0912, PLR0913, PLR0915
                             f'Next: {_build_persistence_advice(analysis_result)}'
                         ).strip(),
                     )
-                    UserProgressRepository(sb, config.logger).upsert_after_critique(
+                    await asyncio.to_thread(
+                        UserProgressRepository(sb, config.logger).upsert_after_critique,
                         user_id=user.user_id,
                         score=analysis_result.score,
                     )
@@ -553,7 +568,8 @@ async def execute_critique_request(  # noqa: C901, PLR0912, PLR0913, PLR0915
                         user.user_id,
                         str(progress_error),
                     )
-                VectorSyncJobRepository(sb, config.logger).enqueue(
+                await asyncio.to_thread(
+                    VectorSyncJobRepository(sb, config.logger).enqueue,
                     ENTITY_CRITIQUE,
                     row.id,
                     OP_UPSERT,
@@ -587,7 +603,8 @@ async def execute_critique_request(  # noqa: C901, PLR0912, PLR0913, PLR0915
                     analysis_result,
                     goals_snapshot=profile_context_str,
                 )
-                vector_service.save_critique(
+                await asyncio.to_thread(
+                    vector_service.save_critique,
                     critique,
                     artwork_filename,
                     user_id=user.user_id,
@@ -605,7 +622,7 @@ async def execute_critique_request(  # noqa: C901, PLR0912, PLR0913, PLR0915
                     str(vector_error),
                 )
                 if storage_service is not None and image_path is not None:
-                    storage_service.delete_file(image_path)
+                    await asyncio.to_thread(storage_service.delete_file, image_path)
         elif not synced_via_pg:
             config.logger.debug(
                 'Skipping vector storage (no Postgres, no VectorService) user_id=%s',
