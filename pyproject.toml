@@ -7,7 +7,7 @@ maintainers = [
     { name = "Maxim Berchun", email = "mberch00@estudiantes.unileon.es" },
 ]
 dependencies = [
-    "fastapi>=0.115.0",
+    "fastapi>=0.136.1",
     "starlette>=1.0.1",
     "slowapi>=0.1.9",
     "pytest>=9.0.3",
