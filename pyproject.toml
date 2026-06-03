@@ -24,7 +24,7 @@ dependencies = [
     "httpx>=0.24.0",
     "idna>=3.15",
     "urllib3>=2.7.0",
-    "PyJWT[crypto]",
+    "PyJWT[crypto]>=2.13.0",
     "supabase>=2.0.0",
 ]
 requires-python = ">=3.12"
