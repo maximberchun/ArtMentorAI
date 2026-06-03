@@ -38,7 +38,7 @@ artmentorai-project = "ule.artmentorai_project.cli:main"
 [project.optional-dependencies]
 test = [
   "hypothesis>=6.135.14",
-  "pyfakefs>=5.9.0",
+  "pyfakefs>=6.2.0",
   "pytest==9.0.3",
   "pytest-asyncio>=0.26.0",
   "pytest-bdd>=8.1.0",
