@@ -2,6 +2,7 @@
   "name": "artmentorai",
   "private": true,
   "scripts": {
+    "build": "npm run build --prefix frontend",
     "test": "npm run test:backend && npm run test:frontend",
     "test:backend": "uv run pytest --cov-fail-under=0",
     "test:frontend": "npm --prefix frontend run test:ci"
