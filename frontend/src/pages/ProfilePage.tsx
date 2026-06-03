@@ -226,13 +226,6 @@ export function ProfilePage() {
               </div>
             </dl>
           </div>
-
-          <div className="rounded-2xl border border-primary/20 bg-primary/[0.06] p-5">
-            <p className="text-sm font-medium text-foreground">Tip</p>
-            <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-              One idea per line keeps your profile easy for the model to parse—short phrases beat long paragraphs here.
-            </p>
-          </div>
         </aside>
 
         <div className="space-y-6 lg:col-span-8">
